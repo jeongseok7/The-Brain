@@ -38,6 +38,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel
 from sentence_transformers import CrossEncoder
+from neo4j import AsyncGraphDatabase
 
 from lightrag import LightRAG
 from lightrag.utils import EmbeddingFunc
@@ -85,6 +86,9 @@ PARSER = os.getenv("PARSER", "mineru")
 HIDDEN_TYPES_FILE = Path(WORKING_DIR) / "hidden_types.json"
 CONV_FILE = Path(WORKING_DIR) / "conversations.json"
 COMPLETED_LOG = Path(WORKING_DIR) / "completed_docs.json"
+
+ALLOWED_EXTENSIONS = {".pdf", ".docx", ".doc", ".txt", ".md", ".pptx", ".xlsx"}
+MAX_UPLOAD_BYTES = 500 * 1024 * 1024  # 500 MB
 
 
 def _load_completed() -> dict:
@@ -166,7 +170,7 @@ _jobs: dict[str, Job] = {}
 _jobs_order: deque = deque(maxlen=50)
 
 # Queue management
-_processing_queue: list[tuple[Job, str]] = []
+_processing_queue: deque[tuple[Job, str]] = deque()
 _queue_paused: bool = False
 _current_job: Job | None = None
 
@@ -274,7 +278,7 @@ def get_reranker() -> CrossEncoder:
 
 
 async def rerank_func(query: str, documents: list[str], top_n: int = 20):
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     pairs = [[query, doc] for doc in documents]
     scores = await loop.run_in_executor(
         None, lambda: get_reranker().predict(pairs, show_progress_bar=True)
@@ -454,14 +458,15 @@ async def external_embed(texts: list[str]) -> np.ndarray:
 # ---------------------------------------------------------------------------
 rag: RAGAnything | None = None
 _base_logger = logging.getLogger("uvicorn.error")
+_neo4j_driver = None
 
 
 async def _queue_worker():
-    """Processes one document at a time. Respects _queue_paused flag."""
+    """Processes documents. Respects _queue_paused flag."""
     global _current_job
     while True:
         if not _queue_paused and _processing_queue:
-            job, file_path = _processing_queue.pop(0)
+            job, file_path = _processing_queue.popleft()
             _current_job = job
             await _process_document(job, file_path)
             _current_job = None
@@ -471,6 +476,7 @@ async def _queue_worker():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global rag
+    global _neo4j_driver
     logging.basicConfig(level=logging.INFO)
     logging.getLogger().setLevel(logging.INFO)
     _base_logger.info("Initialising RAGAnything …")
@@ -545,7 +551,11 @@ async def lifespan(app: FastAPI):
     _base_logger.info("Starting queue worker...")
     asyncio.create_task(_queue_worker())
     _base_logger.info("RAGAnything ready.")
+    _neo4j_driver = AsyncGraphDatabase.driver(
+        NEO4J_URI, auth=(NEO4J_USERNAME, NEO4J_PASSWORD)
+    )
     yield
+    await _neo4j_driver.close()
 
 
 # ---------------------------------------------------------------------------
@@ -582,10 +592,15 @@ app = _app
 # Background processing
 # ---------------------------------------------------------------------------
 async def _process_document(job: Job, file_path: str):
-    assert rag is not None
+    if rag is None:
+        job.status = "error"
+        job.push("error", "RAGAnything not initialised")
+        return
+
     handler = JobLogHandler(job)
     handler.setLevel(logging.DEBUG)
     watched_loggers = ["lightrag", "raganything", "magic_pdf"]
+
     for name in watched_loggers:
         logging.getLogger(name).addHandler(handler)
 
@@ -654,23 +669,17 @@ def health():
 @app.get("/stats")
 async def get_stats():
     jobs = [_jobs[jid] for jid in _jobs_order if jid in _jobs]
-    done = [j for j in jobs if j.status == "done"]
     failed = [j for j in jobs if j.status == "error"]
     active = [j for j in jobs if j.status in ("parsing", "processing")]
 
     # Always query Neo4j directly — correct even after restarts
     total_nodes = total_relations = 0
     try:
-        from neo4j import AsyncGraphDatabase
-
-        async with AsyncGraphDatabase.driver(
-            NEO4J_URI, auth=(NEO4J_USERNAME, NEO4J_PASSWORD)
-        ) as driver:
-            async with driver.session(database=NEO4J_DATABASE) as session:
-                r1 = await session.run("MATCH (n) RETURN count(n) AS c")
-                total_nodes = (await r1.single())["c"]
-                r2 = await session.run("MATCH ()-[r]->() RETURN count(r) AS c")
-                total_relations = (await r2.single())["c"]
+        async with _neo4j_driver.session(database=NEO4J_DATABASE) as session:
+            r1 = await session.run("MATCH (n) RETURN count(n) AS c")
+            total_nodes = (await r1.single())["c"]
+            r2 = await session.run("MATCH ()-[r]->() RETURN count(r) AS c")
+            total_relations = (await r2.single())["c"]
     except Exception as e:
         _base_logger.warning(f"Neo4j stats query failed: {e}")
 
@@ -697,7 +706,7 @@ async def get_hidden_types():
         try:
             with open(HIDDEN_TYPES_FILE, "r") as f:
                 return json.load(f)
-        except:
+        except Exception:
             pass
     # Default hidden types for brand new users
     return ["discarded", "unknown"]
@@ -723,16 +732,11 @@ async def get_graph(limit: int = 300, search: str = ""):
     - No search: top N nodes by connection count
     - With search: 2-hop neighborhood around matching nodes
     """
-    from neo4j import AsyncGraphDatabase
-
     try:
-        async with AsyncGraphDatabase.driver(
-            NEO4J_URI, auth=(NEO4J_USERNAME, NEO4J_PASSWORD)
-        ) as driver:
-            async with driver.session(database=NEO4J_DATABASE) as session:
-                if search.strip():
-                    # Neighborhood search — find matching nodes then expand 2 hops
-                    cypher = """
+        async with _neo4j_driver.session(database=NEO4J_DATABASE) as session:
+            if search.strip():
+                # Neighborhood search — find matching nodes then expand 2 hops
+                cypher = """
                         MATCH (n)
                         WHERE toLower(n.entity_id) CONTAINS toLower($search)
                            OR toLower(coalesce(n.description,'')) CONTAINS toLower($search)
@@ -755,10 +759,10 @@ async def get_graph(limit: int = 300, search: str = ""):
                           coalesce(r.weight, 1.0) AS weight
                         LIMIT 2000
                     """
-                    result = await session.run(cypher, search=search.strip())
-                else:
-                    # Top N nodes by degree, then edges between them
-                    cypher = """
+                result = await session.run(cypher, search=search.strip())
+            else:
+                # Top N nodes by degree, then edges between them
+                cypher = """
                         MATCH (n)
                         WITH n, size([(n)--() | 1]) AS degree
                         ORDER BY degree DESC
@@ -775,43 +779,43 @@ async def get_graph(limit: int = 300, search: str = ""):
                           coalesce(r.weight, 1.0) AS weight
                         LIMIT 3000
                     """
-                    result = await session.run(cypher, limit=limit)
+                result = await session.run(cypher, limit=limit)
 
-                nodes: dict[str, dict] = {}
-                links: list[dict] = []
+            nodes: dict[str, dict] = {}
+            links: list[dict] = []
 
-                async for row in result:
-                    src, tgt = row["src"], row["tgt"]
-                    if not src or not tgt:
-                        continue
+            async for row in result:
+                src, tgt = row["src"], row["tgt"]
+                if not src or not tgt:
+                    continue
 
-                    if src not in nodes:
-                        nodes[src] = {
-                            "id": src,
-                            "type": (row["src_type"] or "unknown").lower(),
-                            "desc": row["src_desc"][:200] if row["src_desc"] else "",
-                            "degree": 0,
-                        }
-                    if tgt not in nodes:
-                        nodes[tgt] = {
-                            "id": tgt,
-                            "type": (row["tgt_type"] or "unknown").lower(),
-                            "desc": row["tgt_desc"][:200] if row["tgt_desc"] else "",
-                            "degree": 0,
-                        }
+                if src not in nodes:
+                    nodes[src] = {
+                        "id": src,
+                        "type": (row["src_type"] or "unknown").lower(),
+                        "desc": row["src_desc"][:200] if row["src_desc"] else "",
+                        "degree": 0,
+                    }
+                if tgt not in nodes:
+                    nodes[tgt] = {
+                        "id": tgt,
+                        "type": (row["tgt_type"] or "unknown").lower(),
+                        "desc": row["tgt_desc"][:200] if row["tgt_desc"] else "",
+                        "degree": 0,
+                    }
 
-                    nodes[src]["degree"] += 1
-                    nodes[tgt]["degree"] += 1
-                    links.append(
-                        {
-                            "source": src,
-                            "target": tgt,
-                            "label": (row["rel_label"] or "")[:80],
-                            "weight": float(row["weight"] or 1.0),
-                        }
-                    )
+                nodes[src]["degree"] += 1
+                nodes[tgt]["degree"] += 1
+                links.append(
+                    {
+                        "source": src,
+                        "target": tgt,
+                        "label": (row["rel_label"] or "")[:80],
+                        "weight": float(row["weight"] or 1.0),
+                    }
+                )
 
-                return {"nodes": list(nodes.values()), "links": links}
+            return {"nodes": list(nodes.values()), "links": links}
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -866,6 +870,15 @@ async def upload_document(file: UploadFile = File(...)):
         raise HTTPException(status_code=503, detail="RAGAnything not initialised yet")
     if not file.filename:
         raise HTTPException(status_code=400, detail="File must have a filename")
+
+    # Validate extension
+    if Path(file.filename).suffix.lower() not in ALLOWED_EXTENSIONS:
+        raise HTTPException(status_code=400, detail="File type not supported")
+
+    # Validate size (read into memory, check, then write)
+    content = await file.read()
+    if len(content) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=400, detail="File too large (max 500 MB)")
 
     dest = Path(UPLOAD_DIR) / file.filename
     with dest.open("wb") as fh:
@@ -951,15 +964,10 @@ async def _resolve_node_ids(entity_names: list[str]) -> list[str]:
     if not entity_names:
         return []
     try:
-        from neo4j import AsyncGraphDatabase
-
-        async with AsyncGraphDatabase.driver(
-            NEO4J_URI, auth=(NEO4J_USERNAME, NEO4J_PASSWORD)
-        ) as driver:
-            async with driver.session(database=NEO4J_DATABASE) as session:
-                # Match by exact entity_id or case-insensitive partial match
-                result = await session.run(
-                    """
+        async with _neo4j_driver.session(database=NEO4J_DATABASE) as session:
+            # Match by exact entity_id or case-insensitive partial match
+            result = await session.run(
+                """
                     UNWIND $names AS name
                     MATCH (n)
                     WHERE toLower(n.entity_id) = toLower(name)
@@ -967,13 +975,13 @@ async def _resolve_node_ids(entity_names: list[str]) -> list[str]:
                     RETURN DISTINCT n.entity_id AS eid
                     LIMIT 60
                     """,
-                    names=entity_names,
-                )
-                ids = []
-                async for row in result:
-                    if row["eid"]:
-                        ids.append(row["eid"])
-                return ids
+                names=entity_names,
+            )
+            ids = []
+            async for row in result:
+                if row["eid"]:
+                    ids.append(row["eid"])
+            return ids
     except Exception as e:
         _base_logger.warning(f"Node ID resolution failed: {e}")
         return []
@@ -1021,7 +1029,7 @@ async def get_conversations():
         try:
             with open(CONV_FILE, "r") as f:
                 return json.load(f)
-        except:
+        except Exception:
             pass
     return []
 
@@ -1052,8 +1060,15 @@ class AsyncSSELogHandler(logging.Handler):
         try:
             loop = asyncio.get_running_loop()
             for q in list(live_log_clients):
-                loop.call_soon_threadsafe(q.put_nowait, data)
+                loop.call_soon_threadsafe(self._safe_put, q, data)
         except RuntimeError:
+            pass
+
+    @staticmethod
+    def _safe_put(q, data):
+        try:
+            q.put_nowait(data)
+        except asyncio.QueueFull:
             pass
 
 

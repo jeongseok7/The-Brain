@@ -10,5 +10,8 @@ python-multipart
 # Async HTTP client (for Ollama)
 httpx
 
+# Neo4j
+neo4j
+
 # Rerank
 sentence-transformers>=3.0.0
