@@ -166,11 +166,18 @@ function processEvent(ev) {
   }
 
   // ── Entity extraction ─────────────────────────────────────────────────
-  if (ev.kind === 'chunk') {
-    const m = /Chunk\s+(\d+)\s+of\s+(\d+)/i.exec(msg);
-    if (m) {
-      S.entityProg = { current: parseInt(m[1]), total: parseInt(m[2]) };
-      updateEntityBar();
+  if (ev.kind === 'chunk' || ev.kind === 'block_type' || ev.kind === 'multimodal_progress') {
+    // If we are doing extraction, the MinerU PDF parsing is definitely done!
+    STAGE_NAMES.forEach(name => {
+      S.stages[name] = { current: 1, total: 1, pct: 100 };
+    });
+    
+    if (ev.kind === 'chunk') {
+      const m = /Chunk\s+(\d+)\s+of\s+(\d+)/i.exec(msg);
+      if (m) {
+        S.entityProg = { current: parseInt(m[1]), total: parseInt(m[2]) };
+        updateEntityBar();
+      }
     }
   }
 
@@ -347,8 +354,8 @@ function updateQueueBadge() {
 // ─── Documents tab ────────────────────────────────────────────────────────
 async function refreshDocuments() {
   updateDocTabStats();
-  await renderDocTable();
   await refreshFailedUploads();
+  await renderDocTable(); 
 }
 
 function updateDocTabStats() {
@@ -359,49 +366,55 @@ function updateDocTabStats() {
 }
 
 async function renderDocTable() {
-  const tbody = document.getElementById('docs-tbody');
+  const processedList = document.getElementById('processed-list');
+  const queuedList = document.getElementById('queued-list');
 
-  // Use in-memory jobs — reliable across restarts since we have completed_docs.json
-  // and active jobs are always in memory
+  // Use in-memory jobs 
   const allJobs = [...S.jobs];
 
-  // Also merge in completed docs from persistent log that may not be in current session
+  // Merge in completed docs from persistent log
   try {
     const completed = await api('GET', '/processed-filenames');
     const inMemoryNames = new Set(S.jobs.map(j => j.filename));
     completed.forEach(fname => {
       if (!inMemoryNames.has(fname)) {
-        allJobs.push({ filename: fname, status: 'done', chunks: 0, nodes: 0, relations: 0,
-                       started_at: 0, finished_at: 0, error: '' });
+        allJobs.push({ filename: fname, status: 'done', chunks: 0, nodes: 0, relations: 0, started_at: 0, finished_at: 0, error: '' });
       }
     });
   } catch {}
 
-  if (!allJobs.length) {
-    tbody.innerHTML = '<tr><td colspan="5" class="empty-state">No jobs recorded yet</td></tr>';
-    return;
+  const processed = allJobs.filter(j => j.status === 'done');
+  const queued = allJobs.filter(j => j.status !== 'done' && j.status !== 'error');
+
+  // Render Processed
+  if (!processed.length) {
+    processedList.innerHTML = '<div class="empty-state">No processed documents</div>';
+  } else {
+    processedList.innerHTML = processed.map(j => {
+      // Find the file size from the uploads list
+      const up = S.uploads.find(u => u.filename === j.filename);
+      const sizeStr = up ? fmtSize(up.size) : '';
+      return `
+      <div class="doc-item">
+        <div class="doc-filename" title="${escHtml(j.filename)}">${escHtml(j.filename)}</div>
+        <div style="display:flex; gap:12px; align-items:center">
+          <span style="font-size:10px; color:var(--text-dim)">${sizeStr}</span>
+          <span class="status-badge badge-done">Done</span>
+        </div>
+      </div>`;
+    }).join('');
   }
 
-  // Sort: active first, then done, then error
-  const order = { parsing:0, processing:1, queued:2, done:3, error:4 };
-  allJobs.sort((a,b) => (order[a.status]??9) - (order[b.status]??9));
-
-  tbody.innerHTML = allJobs.map(j => {
-    const dur = j.started_at && j.finished_at
-      ? fmtDuration(j.finished_at - j.started_at)
-      : j.started_at ? fmtDuration((Date.now()/1000) - j.started_at) + ' (running…)' : '—';
-    return `
-      <tr>
-        <td>
-          <div class="doc-filename" title="${escHtml(j.filename)}">${escHtml(j.filename)}</div>
-          ${j.error ? `<div class="doc-error-msg">${escHtml(j.error.slice(0,80))}</div>` : ''}
-        </td>
-        <td><span class="status-badge badge-${j.status}">${j.status}</span></td>
-        <td>${j.chunks || '—'}</td>
-        <td>${j.nodes  || '—'}</td>
-        <td class="doc-duration">${dur}</td>
-      </tr>`;
-  }).join('');
+  // Render Queued/Parsing
+  if (!queued.length) {
+    queuedList.innerHTML = '<div class="empty-state">No queued documents</div>';
+  } else {
+    queuedList.innerHTML = queued.map(j => `
+      <div class="doc-item">
+        <div class="doc-filename" title="${escHtml(j.filename)}">${escHtml(j.filename)}</div>
+        <span class="status-badge badge-${j.status}">${j.status}</span>
+      </div>`).join('');
+  }
 }
 
 async function refreshFailedUploads() {
@@ -566,6 +579,8 @@ async function submitQuery() {
   const askBtn  = document.getElementById('ask-btn');
 
   ansDiv.classList.add('visible');
+  document.getElementById('query-empty').style.display = 'none';
+  ansDiv.style.display = 'block';
   ansText.innerHTML = '<span class="thinking-indicator">Thinking…</span>';
   askBtn.disabled   = true;
   askBtn.textContent = '…';
@@ -642,7 +657,7 @@ function nodeColor(n) { return TYPE_COLORS[n.type] || '#666666'; }
 // ── THREE loaded explicitly from CDN before force-graph ──────────────────
 function getThree() { return window.THREE; }
 
-let grapg = null;
+let graph = null;
 let graphData = { nodes:[], links:[] };
 let graphNodeLimit = 1000;
 let graphLinkDistance = 120;
@@ -655,6 +670,9 @@ let pulseInterval = null;
 let idleTimer = null;
 let orbitInterval = null;
 let isIdle = false;
+let fullGraphData = { nodes:[], links:[] };
+let selectedNodeTypes = new Set();
+let persistentHiddenTypes = new Set();
 let orbitAngle = 0;
 
 document.querySelector('[data-tab="graph"]').addEventListener('click', () => {
@@ -663,6 +681,12 @@ document.querySelector('[data-tab="graph"]').addEventListener('click', () => {
 
 async function initGraph() {
   setGraphLoading('Querying Neo4j…');
+  try {
+    const hidden = await api('GET', '/hidden-types');
+    persistentHiddenTypes = new Set(hidden);
+  } catch(e) {
+    persistentHiddenTypes = new Set(['discarded', 'unknown']);
+  }
   await loadGraph('');
 }
 
@@ -703,22 +727,43 @@ async function loadGraph(search) {
     const url = search ? `/graph?search=${encodeURIComponent(search)}` : `/graph?limit=${graphNodeLimit}`;
     const data = await api('GET', url);
     
-    // --- NEW: Erase "Discarded Content" from the data ---
-    const hiddenNodeId = "Discarded Content";
-    
-    // 1. Remove the node itself
-    data.nodes = data.nodes.filter(n => n.id !== hiddenNodeId);
-    
-    // 2. Remove any links where this node was the source or target
-    data.links = data.links.filter(l => 
-      l.source !== hiddenNodeId && l.target !== hiddenNodeId
-    );
-
-    graphData = data;
-    renderGraph(data);
+    // Save the raw data, then apply filters
+    fullGraphData = data;
+    applyGraphFilters();
   } catch(e) {
     document.getElementById('graph-loading-msg').textContent = 'Error: ' + e.message;
   }
+}
+
+function applyGraphFilters() {
+  if (!graph) {
+    graphData = fullGraphData;
+    renderGraph(fullGraphData);
+  }
+
+  // Filter nodes based on persistent hide AND inclusive selection
+  const filteredNodes = fullGraphData.nodes.filter(n => {
+    if (persistentHiddenTypes.has(n.type)) return false; // HARD BLOCK
+    if (selectedNodeTypes.size === 0) return true;       // Show all remaining
+    return selectedNodeTypes.has(n.type);                // Exclusive isolation
+  });
+  
+  const validNodeIds = new Set(filteredNodes.map(n => n.id));
+  
+  const filteredLinks = fullGraphData.links.filter(l => {
+    const s = l.source?.id || l.source;
+    const t = l.target?.id || l.target;
+    return validNodeIds.has(s) && validNodeIds.has(t);
+  });
+
+  restoreColors();
+  graphData = { nodes: filteredNodes, links: filteredLinks };
+  graph.graphData(graphData);
+  
+  // Legend: Don't show persistently hidden items here!
+  updateLegend(fullGraphData.nodes.filter(n => !persistentHiddenTypes.has(n.type))); 
+  updateGraphStats(graphData);
+  hideGraphLoading(); 
 }
 
 function linkSrcColor(l, nodes) {
@@ -999,13 +1044,16 @@ function renderGraph(data) {
 function restoreColors() {
   if (!graph) return;
   currentNode = null;
-  document.getElementById('node-info').style.display = 'none'; 
-  
+  document.getElementById('node-info').style.display = 'none';
+
+  if (window.activeRing) {
+    graph.scene().remove(window.activeRing);
+    window.activeRing = null;
+  }
+
   graph.linkDirectionalParticles(0);
-  
   // Reset all nodes back to solid colors
   graph.nodeColor(n => TYPE_COLORS[n.type] || '#666666');
-  
   // NEW: Reset all lines back to the faint default web
   graph.linkColor(() => '#ffffff10'); 
 }
@@ -1071,6 +1119,7 @@ function resetGraph() {
   document.getElementById('graph-search').value = '';
   document.getElementById('node-info').style.display = 'none';
   currentNode = null;
+  selectedNodeTypes.clear();
   loadGraph('');
 }
 
@@ -1083,19 +1132,39 @@ function debounceSearch(val) {
 function updateLegend(nodes) {
   const typeCounts = {};
   nodes.forEach(n => { if (n.type) typeCounts[n.type] = (typeCounts[n.type]||0) + 1; });
-  const types = Object.entries(typeCounts)
-    .filter(([t]) => t !== 'discarded' && t !== 'unknown')
-    .sort((a,b) => b[1]-a[1]);
+  
+  // Sort by count
+  const types = Object.entries(typeCounts).sort((a,b) => b[1]-a[1]);
+  
   document.getElementById('legend-items').innerHTML = types.map(([t, count]) => {
     const color = TYPE_COLORS[t] || '#666';
-    return `<div style="display:flex;align-items:center;gap:5px;font-size:10px;
-                        font-family:'JetBrains Mono',monospace">
-      <span style="width:8px;height:8px;border-radius:50%;background:${color};
-                   flex-shrink:0;box-shadow:0 0 6px ${color}88"></span>
+    
+    // If nothing is selected, everything is active. Otherwise, only selected are active.
+    const isActive = selectedNodeTypes.size === 0 || selectedNodeTypes.has(t);
+    const opacity = isActive ? '1' : '0.3';
+    
+    return `<div onclick="toggleNodeType('${t}')" 
+                 style="display:flex; align-items:center; gap:6px; font-size:10px;
+                        font-family:'JetBrains Mono',monospace; cursor:pointer;
+                        opacity:${opacity}; transition:0.2s"
+                 onmouseover="this.style.opacity='1'" 
+                 onmouseout="this.style.opacity='${opacity}'">
+      <span style="width:8px; height:8px; border-radius:50%; background:${color};
+                   flex-shrink:0; box-shadow:0 0 6px ${color}88"></span>
       <span style="color:${color}">${t}</span>
-      <span style="color:#333">${count}</span>
+      <span style="color:var(--text-dim)">${count}</span>
     </div>`;
   }).join('');
+}
+
+// Click handler for the legend
+function toggleNodeType(type) {
+  if (selectedNodeTypes.has(type)) {
+    selectedNodeTypes.delete(type); // Click again to deselect
+  } else {
+    selectedNodeTypes.add(type);    // Click to select/isolate
+  }
+  applyGraphFilters();
 }
 
 function updateGraphStats(data) {
@@ -1172,6 +1241,60 @@ function resetToMainGraph() {
   // It's usually loadGraph() or loadGraph(null) to fetch the default 1000 nodes.
   loadGraph(); 
 }
+
+// --- PERSISTENT HIDE MENU LOGIC ---
+function toggleHideMenu() {
+  const menu = document.getElementById('hide-menu');
+  if (menu.style.display === 'none') {
+    renderHideMenu();
+    menu.style.display = 'flex';
+  } else {
+    menu.style.display = 'none';
+  }
+}
+
+function renderHideMenu() {
+  const allTypes = new Set();
+  fullGraphData.nodes.forEach(n => { if(n.type) allTypes.add(n.type); });
+  
+  const sorted = Array.from(allTypes).sort();
+  document.getElementById('hide-menu-items').innerHTML = sorted.map(t => {
+    const isHidden = persistentHiddenTypes.has(t);
+    const color = TYPE_COLORS[t] || '#666';
+    return `
+      <label class="hide-checkbox-row">
+        <input type="checkbox" class="hide-checkbox" 
+               ${isHidden ? 'checked' : ''} 
+               onchange="togglePersistentHide('${t}', this.checked)">
+        <span style="width:8px; height:8px; border-radius:50%; background:${color}; display:inline-block;"></span>
+        ${t}
+      </label>
+    `;
+  }).join('');
+}
+
+async function togglePersistentHide(type, isChecked) {
+  if (isChecked) persistentHiddenTypes.add(type);
+  else persistentHiddenTypes.delete(type);
+  
+  applyGraphFilters(); // Instantly update the 3D graph
+  
+  // Save to backend permanently
+  try {
+    await api('POST', '/hidden-types', Array.from(persistentHiddenTypes));
+  } catch(e) {
+    console.error("Failed to save hidden types", e);
+  }
+}
+
+// Close dropdown if clicking anywhere else on the screen
+document.addEventListener('click', (e) => {
+  const menu = document.getElementById('hide-menu');
+  const btn = document.querySelector('[onclick="toggleHideMenu()"]');
+  if (menu && menu.style.display === 'flex' && !menu.contains(e.target) && !btn.contains(e.target)) {
+    menu.style.display = 'none';
+  }
+});
 
 // ─── Start ────────────────────────────────────────────────────────────────
 init();
