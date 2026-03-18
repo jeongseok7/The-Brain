@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>THE BRAIN</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><rect width=%22100%22 height=%22100%22 rx=%2224%22 fill=%22%23080808%22/><text x=%2250%25%22 y=%2250%25%22 dominant-baseline=%22central%22 text-anchor=%22middle%22 font-family=%22monospace%22 font-size=%2254%22 font-weight=%22bold%22><tspan fill=%22%23ffffff%22>T</tspan><tspan fill=%22%2339ff14%22>B</tspan></text></svg>">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,500;0,700;1,400&display=swap" rel="stylesheet">
 
@@ -24,22 +25,27 @@
 
   <!-- ─── Header ───────────────────────────────────────────────────────── -->
   <div id="header">
-    <span class="logo">THE BRAIN</span>
-    <div class="status-dot" id="status-dot"></div>
+    <span class="logo">THE <span>BRAIN</span></span>
+    
     <nav class="nav">
       <button class="nav-btn active" data-tab="dashboard">Dashboard</button>
       <button class="nav-btn" data-tab="upload" id="nav-upload">Upload</button>
       <button class="nav-btn" data-tab="documents">Documents</button>
       <button class="nav-btn" data-tab="logs">Live Log</button>
+      <button class="nav-btn" data-tab="query">Query</button>
       <button class="nav-btn" data-tab="graph">Graph</button>
     </nav>
+
     <div class="header-right">
-      <span class="model-tag" id="model-tag">—</span>
+      <div class="model-tag">
+        <div class="status-dot" id="status-dot"></div>
+        <span id="model-tag">—</span>
+      </div>
 
       <a href="https://github.com/Hastur-HP/The-Brain" target="_blank" title="View Source on GitHub"
-         style="color: var(--text-dim); transition: color 0.2s; display: flex; align-items: center; margin-left: 8px;"
-         onmouseover="this.style.color='var(--text)'" 
-         onmouseout="this.style.color='var(--text-dim)'">
+         style="color: #888; padding: 8px; border-radius: 50%; transition: 0.2s; display: flex; align-items: center; margin-left: 4px;"
+         onmouseover="this.style.color='#fff'; this.style.backgroundColor='rgba(255,255,255,0.05)'" 
+         onmouseout="this.style.color='#888'; this.style.backgroundColor='transparent'">
         <svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
           <path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"></path>
         </svg>
@@ -53,41 +59,38 @@
     <!-- ══ DASHBOARD ══════════════════════════════════════════════════════ -->
     <div class="tab-panel active" id="tab-dashboard">
 
-      <!-- Stat cards -->
       <div class="stat-grid">
-        <div class="stat-card">
+        <div class="glass-card stat-card">
           <div class="stat-value" id="stat-processed">0</div>
           <div class="stat-label">Processed</div>
         </div>
-        <div class="stat-card">
+        <div class="glass-card stat-card">
           <div class="stat-value cyan" id="stat-nodes">0</div>
           <div class="stat-label">Knowledge Nodes</div>
         </div>
-        <div class="stat-card">
+        <div class="glass-card stat-card">
           <div class="stat-value orange" id="stat-relations">0</div>
           <div class="stat-label">Relations</div>
         </div>
-        <div class="stat-card">
+        <div class="glass-card stat-card">
           <div class="stat-value" id="stat-queued" style="color:var(--text-mid)">0</div>
           <div class="stat-label">Queued / Waiting</div>
         </div>
       </div>
  
-      <!-- Paused banner -->
       <div class="paused-banner" id="paused-banner">
         <span>⏸</span>
         <span>Queue is paused — current job will finish, next won't start until resumed.</span>
         <button class="btn btn-warn btn-sm" onclick="resumeQueue()" style="margin-left:auto">Resume</button>
       </div>
 
-      <!-- Active job or idle -->
       <div id="active-container">
-        <div class="idle-state" id="idle-state">
+        <div class="glass-card idle-state" id="idle-state">
           <div class="idle-icon">◈</div>
           <div class="idle-text">No document currently processing</div>
         </div>
         <div id="active-job-panel" style="display:none">
-          <div class="active-job-panel">
+          <div class="glass-card active-job-panel">
             <div class="active-job-header">
               <div>
                 <div class="active-job-name" id="active-filename">—</div>
@@ -99,14 +102,11 @@
               </div>
             </div>
 
-            <!-- MinerU pipeline stages -->
             <div class="section-title" style="margin-bottom:10px">MinerU Pipeline</div>
             <div class="stages-grid" id="stages-grid">
-              <!-- populated by JS -->
-            </div>
+              </div>
 
-            <!-- Entity & Relation extraction -->
-            <div class="extraction-bar" id="entity-bar" style="display:none">
+            <div class="glass-card extraction-bar" id="entity-bar" style="display:none">
               <div class="extraction-header">
                 <span class="extraction-title">Entity &amp; Relation Extraction</span>
                 <span class="extraction-pct" id="entity-pct">0%</span>
@@ -117,8 +117,7 @@
               <div class="stage-sub" id="entity-sub"></div>
             </div>
 
-            <!-- Multimodal processing -->
-            <div class="extraction-bar" id="multimodal-bar" style="display:none;margin-top:8px">
+            <div class="glass-card extraction-bar" id="multimodal-bar" style="display:none;margin-top:8px">
               <div class="extraction-header">
                 <span class="extraction-title">Multimodal Processing (VLM)</span>
                 <span class="extraction-pct" id="multimodal-pct">0%</span>
@@ -129,8 +128,7 @@
               <div class="stage-sub" id="multimodal-sub"></div>
             </div>
 
-            <!-- Block types -->
-            <div class="block-types" id="block-types-panel" style="display:none;margin-top:10px">
+            <div class="glass-card block-types" id="block-types-panel" style="display:none;margin-top:10px">
               <div class="block-types-title">Content Block Types</div>
               <div id="block-types-bars"></div>
             </div>
@@ -140,7 +138,6 @@
 
     </div>
 
-    <!-- ══ UPLOAD ═════════════════════════════════════════════════════════ -->
     <div class="tab-panel" id="tab-upload">
       <div class="drop-zone" id="drop-zone" onclick="document.getElementById('file-input').click()">
         <div class="drop-icon">⬆</div>
@@ -169,10 +166,9 @@
       </div>
     </div>
 
-    <!-- ══ DOCUMENTS ══════════════════════════════════════════════════════ -->
     <div class="tab-panel" id="tab-documents">
 
-      <div class="kb-stats" id="kb-stats">
+      <div class="glass-card kb-stats" id="kb-stats">
         <div class="kb-stat">
           <span class="kb-stat-value" id="kb-docs">0</span>
           <span class="kb-stat-label">Documents</span>
@@ -190,37 +186,36 @@
         </div>
       </div>
 
-      <div class="section-title">All Jobs</div>
-      <div style="background:var(--bg2);border:1px solid var(--border);border-radius:4px;overflow:hidden;margin-bottom:24px">
-        <table class="docs-table">
-          <thead>
-            <tr>
-              <th>Document</th>
-              <th>Status</th>
-              <th>Chunks</th>
-              <th>Nodes</th>
-              <th>Duration</th>
-            </tr>
-          </thead>
-          <tbody id="docs-tbody">
-            <tr><td colspan="6" class="empty-state">No jobs yet</td></tr>
-          </tbody>
-        </table>
-      </div>
-
-      <div class="failed-section" id="failed-section" style="display:none">
-        <div class="section-title">
-          <span id="failed-title">Failed / Orphaned Uploads</span>
-          <button class="btn btn-danger btn-sm" onclick="clearAllFailed()" style="margin-left:auto;margin-right:0">Clear All</button>
+      <div class="docs-layout">
+        <div class="glass-card" id="failed-section" style="display:none; border-color: rgba(255, 60, 60, 0.3);">
+          <div class="section-title" style="color: var(--red)">
+            <span id="failed-title">Failed / Orphaned Jobs</span>
+            <button class="btn btn-danger btn-sm" onclick="clearAllFailed()" style="margin-left:auto;margin-right:0">Clear All</button>
+          </div>
+          <div class="doc-list" id="failed-list"></div>
         </div>
-        <div class="failed-list" id="failed-list"></div>
+
+        <div class="docs-split">
+          <div class="glass-card" style="display: flex; flex-direction: column;">
+            <div class="section-title">Processed Documents (Done)</div>
+            <div class="doc-list" id="processed-list" style="flex: 1; overflow-y: auto;">
+              <div class="empty-state">No processed documents</div>
+            </div>
+          </div>
+          
+          <div class="glass-card" style="display: flex; flex-direction: column;">
+            <div class="section-title">Queued Documents</div>
+            <div class="doc-list" id="queued-list" style="flex: 1; overflow-y: auto;">
+              <div class="empty-state">No queued documents</div>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
 
     <!-- ══ LIVE LOG ════════════════════════════════════════════════════════ -->
-    <div class="tab-panel" id="tab-logs" style="padding-bottom:0">
-      <div class="log-panel">
-
+    <div class="tab-panel" id="tab-logs" style="padding-bottom:24px">
+      <div class="log-panel" style="height: 100%;">
         <div class="log-controls">
           <select class="log-job-select" id="log-job-select" onchange="selectLogJob(this.value)">
             <option value="">— Select a job —</option>
@@ -230,18 +225,35 @@
           <button class="toggle-btn on" id="autoscroll-btn" onclick="toggleAutoScroll()">Auto-scroll</button>
           <button class="btn btn-secondary btn-sm" onclick="clearDisplayedLogs()">Clear View</button>
         </div>
-
-        <div class="log-stream" id="log-stream">
+        <div class="glass-card log-stream" id="log-stream">
           <div class="empty-state">Select a job above to view its log</div>
         </div>
+      </div>
+    </div>
 
-        <div class="query-panel">
-          <div class="query-row">
-            <textarea class="query-input" id="query-input"
-              placeholder="Ask something about your documents… (Ctrl+Enter to submit)"
-              rows="1"
-              onkeydown="handleQueryKey(event)"
-              oninput="autoResize(this)"></textarea>
+    <!-- ══ QUERY ════════════════════════════════════════════════════════ -->
+    <div class="tab-panel" id="tab-query">
+      <div class="glass-card chat-layout">
+        
+        <div class="chat-history" id="query-answer" style="display: none;">
+          <div class="answer-header">
+            <span class="answer-label" style="color: var(--green)">The Brain Says:</span>
+            <button class="copy-btn" onclick="copyAnswer()">Copy</button>
+          </div>
+          <div class="answer-text" id="answer-text"></div>
+        </div>
+        <div class="chat-history empty-state" id="query-empty" style="display: flex; align-items: center; justify-content: center;">
+          Ask a question about your knowledge base to begin.
+        </div>
+
+        <div class="query-input-row">
+          <textarea class="query-input" id="query-input"
+            placeholder="Ask something about your documents… (Ctrl+Enter to submit)"
+            rows="1"
+            onkeydown="handleQueryKey(event)"
+            oninput="autoResize(this)"></textarea>
+          
+          <div class="mode-wrapper">
             <select class="mode-select" id="mode-select">
               <option value="mix">mix</option>
               <option value="hybrid">hybrid</option>
@@ -249,17 +261,19 @@
               <option value="global">global</option>
               <option value="naive">naive</option>
             </select>
-            <button class="btn btn-primary" id="ask-btn" onclick="submitQuery()">Ask</button>
-          </div>
-          <div class="query-answer" id="query-answer">
-            <div class="answer-header">
-              <span class="answer-label">Answer</span>
-              <button class="copy-btn" onclick="copyAnswer()">Copy</button>
+            <div class="tooltip-container">
+              <span class="help-icon">?</span>
+              <div class="tooltip-text">
+                <b>mix:</b> Vector + Local + Global graph<br>
+                <b>hybrid:</b> Vector + Local graph<br>
+                <b>local:</b> Specific entities & neighbors<br>
+                <b>global:</b> Broad themes & communities<br>
+                <b>naive:</b> Standard vector search only
+              </div>
             </div>
-            <div class="answer-text" id="answer-text"></div>
           </div>
+          <button class="btn btn-primary" id="ask-btn" onclick="submitQuery()">Ask</button>
         </div>
-
       </div>
     </div>
 
@@ -267,127 +281,90 @@
     <div class="tab-panel" id="tab-graph" style="padding:0;height:100%">
       <div id="graph-container" style="position:relative;width:100%;height:100%">
 
-        <!-- Controls overlay -->
-        <div id="graph-controls" style="
-          position:absolute;top:16px;left:16px;z-index:10;
-          display:flex;flex-direction:column;gap:8px;width:280px">
+        <div class="glass-card" style="position:absolute; top:90px; left:16px; z-index:11; display:flex; gap:8px; width:280px; padding:12px 16px;">
+          <input type="text" id="graph-search" class="query-input" placeholder="Search nodes…"
+            style="min-height:36px; padding:8px 12px; flex:1;"
+            oninput="debounceSearch(this.value)">
+          <button class="btn btn-secondary" onclick="resetGraph()" style="padding:8px 12px;">Reset</button>
+        </div>
 
-          <div style="display:flex;gap:8px">
-            <input type="text" id="graph-search" placeholder="Search nodes…"
-              style="flex:1;background:rgba(8,8,8,0.85);border:1px solid #333;
-                     color:#c8c8c8;padding:7px 11px;border-radius:3px;
-                     font-family:'JetBrains Mono',monospace;font-size:12px;backdrop-filter:blur(4px)"
-              oninput="debounceSearch(this.value)">
-            <button onclick="resetGraph()" style="
-              background:rgba(8,8,8,0.85);border:1px solid #333;color:#888;
-              font-family:'JetBrains Mono',monospace;font-size:11px;padding:7px 12px;
-              border-radius:3px;cursor:pointer;backdrop-filter:blur(4px);
-              font-weight:700;letter-spacing:0.08em;text-transform:uppercase"
-              onmouseover="this.style.color='#c8c8c8'" onmouseout="this.style.color='#888'">Reset</button>
-          </div>
-
-          <div id="graph-stats" style="
-            background:rgba(8,8,8,0.85);border:1px solid #333;border-radius:3px;
-            padding:8px 12px;font-size:11px;color:#555;backdrop-filter:blur(4px)">
+        <div class="glass-card" style="position:absolute; top:170px; left:16px; z-index:10; display:flex; flex-direction:column; gap:14px; width:280px; padding:16px;">
+          <div id="graph-stats" style="font-size:11px; color:var(--text-mid); text-align:center;">
             Loading graph…
           </div>
 
-          <!-- Legend -->
-          <div id="graph-legend" style="
-            background:rgba(8,8,8,0.85);border:1px solid #333;border-radius:3px;
-            padding:10px 12px;backdrop-filter:blur(4px)">
-            <div style="font-size:10px;color:#555;text-transform:uppercase;
-                        letter-spacing:0.1em;margin-bottom:8px;font-weight:700">Node Types</div>
-            <div id="legend-items" style="display:flex;flex-wrap:wrap;gap:6px"></div>
+          <div>
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; position:relative; z-index:20;">
+              <div style="font-size:10px; color:var(--text-mid); text-transform:uppercase; letter-spacing:0.1em; font-weight:700">Node Types</div>
+              
+              <button class="btn btn-secondary btn-sm" onclick="toggleHideMenu()" style="padding:4px 10px; font-size:9px; border-radius:100px;">Hide ▾</button>
+
+              <div id="hide-menu" style="display:none; position:absolute; top:100%; right:0; margin-top:8px; width:200px; flex-direction:column; gap:10px; padding:16px; background:rgba(5,5,8,0.95); backdrop-filter:blur(24px); -webkit-backdrop-filter:blur(24px); border:1px solid rgba(255,255,255,0.1); border-radius:16px; box-shadow:0 12px 40px rgba(0,0,0,0.6);">
+                <div style="font-size:10px; color:var(--text-mid); text-transform:uppercase; letter-spacing:0.1em; font-weight:700">Persistently Hide</div>
+                <div id="hide-menu-items" style="display:flex; flex-direction:column; gap:8px; max-height:250px; overflow-y:auto; padding-right:4px;">
+                  </div>
+              </div>
+            </div>
+
+            <div id="legend-items" style="display:flex; flex-wrap:wrap; gap:8px"></div>
           </div>
 
-          <div id="current-view-panel" style="display: none; margin-top: 15px; border: 1px solid #333; background: rgba(6,6,8,0.92); padding: 15px; border-radius: 4px; font-family: 'JetBrains Mono', monospace; width: 100%; box-sizing: border-box;">
-            <div style="color: #666; font-size: 10px; text-transform: uppercase; margin-bottom: 5px; letter-spacing: 1px;">Exploring Neighborhood</div>
-            <div id="current-view-name" style="color: #39ff14; font-size: 14px; font-weight: bold; margin-bottom: 8px; word-wrap: break-word;"></div>
-            <div id="current-view-desc" style="color: #999; font-size: 11px; line-height: 1.5; max-height: 100px; overflow-y: auto; margin-bottom: 12px;"></div>
-            <button onclick="resetToMainGraph()" style="background: transparent; border: 1px solid #555; color: #aaa; padding: 6px 10px; cursor: pointer; font-size: 10px; width: 100%; border-radius: 3px; transition: 0.2s;" onmouseover="this.style.color='#fff'; this.style.borderColor='#fff'" onmouseout="this.style.color='#aaa'; this.style.borderColor='#555'">
-              ← BACK TO MAIN GRAPH
-            </button>
+          <div id="current-view-panel" style="display:none; margin-top:4px; padding-top:14px; border-top:1px solid rgba(255,255,255,0.05);">
+            <div style="color:var(--text-dim); font-size:10px; text-transform:uppercase; margin-bottom:6px; letter-spacing:1px;">Exploring Neighborhood</div>
+            <div id="current-view-name" style="font-size:14px; font-weight:bold; margin-bottom:8px; word-wrap:break-word;"></div>
+            <div id="current-view-desc" style="color:var(--text-mid); font-size:11px; line-height:1.5; max-height:100px; overflow-y:auto; margin-bottom:12px;"></div>
+            <button class="btn btn-secondary" style="width:100%" onclick="resetToMainGraph()">← Back to Main</button>
           </div>
         </div>
 
-        <!-- Node info panel -->
-        <div id="node-info" style="
-          position:absolute;top:16px;right:16px;z-index:10;width:280px;
-          background:rgba(8,8,8,0.92);border:1px solid #333;border-radius:4px;
-          padding:14px;font-family:'JetBrains Mono',monospace;font-size:12px;
-          backdrop-filter:blur(6px);display:none">
-          <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px">
-            <span id="node-info-type" style="font-size:10px;font-weight:700;
-              letter-spacing:0.1em;text-transform:uppercase"></span>
+        <div id="node-info" class="glass-card" style="position:absolute; top:90px; right:16px; z-index:10; width:280px; display:none;">
+          <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:10px">
+            <span id="node-info-type" style="font-size:10px; font-weight:700; letter-spacing:0.1em; text-transform:uppercase"></span>
             <button onclick="document.getElementById('node-info').style.display='none'"
-              style="background:transparent;border:none;color:#555;cursor:pointer;
-                     font-size:16px;line-height:1;padding:0">✕</button>
+              style="background:transparent; border:none; color:var(--text-dim); cursor:pointer; font-size:16px; padding:0;">✕</button>
           </div>
-          <div id="node-info-name" style="font-weight:700;color:#c8c8c8;
-            margin-bottom:8px;word-break:break-word;line-height:1.4"></div>
-          <div id="node-info-desc" style="color:#888;font-size:11px;
-            line-height:1.6;word-break:break-word;max-height:160px;overflow-y:auto"></div>
-          <div id="node-info-degree" style="margin-top:8px;font-size:10px;color:#555"></div>
-          <button onclick="focusNode(currentNode)" style="
-            margin-top:10px;width:100%;background:transparent;
-            border:1px solid #2a2a2a;color:#888;
-            font-family:'JetBrains Mono',monospace;font-size:10px;
-            padding:5px;border-radius:2px;cursor:pointer;
-            text-transform:uppercase;letter-spacing:0.08em"
-            onmouseover="this.style.color='#c8c8c8';this.style.borderColor='#444'"
-            onmouseout="this.style.color='#888';this.style.borderColor='#2a2a2a'">
+          <div id="node-info-name" style="font-weight:700; color:#fff; margin-bottom:8px; word-break:break-word; line-height:1.4"></div>
+          <div id="node-info-desc" style="color:var(--text-mid); font-size:11px; line-height:1.6; word-break:break-word; max-height:160px; overflow-y:auto"></div>
+          <div id="node-info-degree" style="margin-top:8px; font-size:10px; color:var(--text-dim)"></div>
+          <button class="btn btn-secondary" onclick="focusNode(currentNode)" style="margin-top:12px; width:100%;">
             Explore Neighborhood
           </button>
         </div>
 
-        <div id="graph-settings-panel" style="
-          position:absolute; bottom:60px; right:16px; z-index:10; width:220px;
-          background:rgba(8,8,8,0.92); border:1px solid #333; border-radius:4px;
-          padding:14px; font-family:'JetBrains Mono',monospace; font-size:12px;
-          backdrop-filter:blur(6px); display:none; flex-direction:column; gap:10px;">
-          
-          <!-- Slider node limit -->
+        <div id="graph-settings-panel" class="glass-card" style="position:absolute; bottom:60px; right:16px; z-index:10; width:260px; display:none; flex-direction:column; gap:12px;">
           <div style="display:flex; justify-content:space-between; align-items:center;">
-            <span style="color:#888; text-transform:uppercase; letter-spacing:0.1em; font-size:10px;">Node Limit</span>
-            <span id="node-limit-val" style="color:#39ff14; font-weight:bold;">1000</span>
+            <span style="color:var(--text-mid); text-transform:uppercase; letter-spacing:0.1em; font-size:10px;">Node Limit</span>
+            <span id="node-limit-val" style="color:var(--green); font-weight:bold;">1000</span>
           </div>
           <input type="range" id="node-limit-slider" min="100" max="3000" step="100" value="1000"
-            style="width:100%; cursor:pointer; accent-color:#39ff14;"
+            style="width:100%; cursor:pointer; accent-color:var(--green);"
             oninput="document.getElementById('node-limit-val').textContent = this.value"
             onchange="updateGraphLimit(this.value)">
-          <div style="font-size:9px; color:#555; text-align:center;">Higher values impact performance</div>
+          <div style="font-size:9px; color:var(--text-dim); text-align:center;">Higher values impact performance</div>
           
-          <!-- Slider node dispance -->
-          <div style="display:flex; justify-content:space-between; align-items:center; margin-top:10px;">
-            <span style="color:#888; text-transform:uppercase; letter-spacing:0.1em; font-size:10px;">Node Distance</span>
-            <span id="node-dist-val" style="color:#39ff14; font-weight:bold;">120</span>
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-top:6px;">
+            <span style="color:var(--text-mid); text-transform:uppercase; letter-spacing:0.1em; font-size:10px;">Node Distance</span>
+            <span id="node-dist-val" style="color:var(--green); font-weight:bold;">120</span>
           </div>
           <input type="range" id="node-dist-slider" min="50" max="300" step="10" value="120"
-            style="width:100%; cursor:pointer; accent-color:#39ff14;"
+            style="width:100%; cursor:pointer; accent-color:var(--green);"
             oninput="document.getElementById('node-dist-val').textContent = this.value"
             onchange="updateGraphDistance(this.value)">
 
-          <!-- Node repulsion -->
-          <div style="display:flex; justify-content:space-between; align-items:center; margin-top:10px;">
-            <span style="color:#888; text-transform:uppercase; letter-spacing:0.1em; font-size:10px;">Node Repulsion</span>
-            <span id="node-repel-val" style="color:#39ff14; font-weight:bold;">1300</span>
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-top:6px;">
+            <span style="color:var(--text-mid); text-transform:uppercase; letter-spacing:0.1em; font-size:10px;">Node Repulsion</span>
+            <span id="node-repel-val" style="color:var(--green); font-weight:bold;">1300</span>
           </div>
           <input type="range" id="node-repel-slider" min="100" max="3000" step="100" value="1300"
-            style="width:100%; cursor:pointer; accent-color:#39ff14;"
+            style="width:100%; cursor:pointer; accent-color:var(--green);"
             oninput="document.getElementById('node-repel-val').textContent = this.value"
             onchange="updateGraphRepulsion(this.value)">
         </div>
 
-        <button onclick="document.getElementById('graph-settings-panel').style.display = document.getElementById('graph-settings-panel').style.display === 'none' ? 'flex' : 'none'" style="
-          position:absolute; bottom:16px; right:16px; z-index:10;
-          background:rgba(8,8,8,0.85); border:1px solid #333; color:#888;
-          width:36px; height:36px; border-radius:4px; cursor:pointer;
-          display:flex; align-items:center; justify-content:center;
-          backdrop-filter:blur(4px); transition: 0.2s;"
-          onmouseover="this.style.color='#c8c8c8'; this.style.borderColor='#555'"
-          onmouseout="this.style.color='#888'; this.style.borderColor='#333'">
-          <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+        <button onclick="document.getElementById('graph-settings-panel').style.display = document.getElementById('graph-settings-panel').style.display === 'none' ? 'flex' : 'none'" 
+          class="glass-card" style="position:absolute; bottom:16px; right:16px; z-index:10; width:40px; height:40px; padding:0; display:flex; align-items:center; justify-content:center; cursor:pointer; color:var(--text-mid); transition:0.2s;"
+          onmouseover="this.style.color='#fff'" onmouseout="this.style.color='var(--text-mid)'">
+          <svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" stroke-width="2" fill="none"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
         </button>
 
         <!-- Graph mount point -->

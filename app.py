@@ -46,28 +46,31 @@ from raganything import RAGAnything, RAGAnythingConfig
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-OLLAMA_BASE_URL  = os.getenv("OLLAMA_BASE_URL",    "http://localhost:11434")
-LIGHTRAG_API_URL = os.getenv("LIGHTRAG_API_URL",  "http://localhost:9621")
-LLM_MODEL        = os.getenv("LLM_MODEL",           "qwen3.5:9b")
-VISION_MODEL     = os.getenv("VISION_MODEL",         "qwen2.5vl:latest")
-EMBEDDING_MODEL  = os.getenv("EMBEDDING_MODEL",      "qwen3-embedding:8b")
-EMBEDDING_DIM    = int(os.getenv("EMBEDDING_DIM",   "4096"))
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+LIGHTRAG_API_URL = os.getenv("LIGHTRAG_API_URL", "http://localhost:9621")
+LLM_MODEL = os.getenv("LLM_MODEL", "qwen3.5:9b")
+VISION_MODEL = os.getenv("VISION_MODEL", "qwen2.5vl:latest")
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "qwen3-embedding:8b")
+EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM", "4096"))
 MAX_EMBED_TOKENS = int(os.getenv("MAX_EMBED_TOKENS", "8192"))
-CHUNK_SIZE       = int(os.getenv("CHUNK_SIZE",       "600"))
-CHUNK_OVERLAP    = int(os.getenv("CHUNK_OVERLAP_SIZE","100"))
+CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "600"))
+CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP_SIZE", "100"))
 
-NEO4J_URI        = os.getenv("NEO4J_URI",       "bolt://localhost:7687")
-NEO4J_USERNAME   = os.getenv("NEO4J_USERNAME",  "neo4j")
-NEO4J_PASSWORD   = os.getenv("NEO4J_PASSWORD",  "")
-NEO4J_DATABASE   = os.getenv("NEO4J_DATABASE",  "neo4j")
+NEO4J_URI = os.getenv("NEO4J_URI", "bolt://localhost:7687")
+NEO4J_USERNAME = os.getenv("NEO4J_USERNAME", "neo4j")
+NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "")
+NEO4J_DATABASE = os.getenv("NEO4J_DATABASE", "neo4j")
 
-WORKING_DIR      = os.getenv("WORKING_DIR",  "/app/rag_storage")
-UPLOAD_DIR       = os.getenv("UPLOAD_DIR",   "/app/uploads")
-OUTPUT_DIR       = os.getenv("OUTPUT_DIR",   "/app/output")
-PARSER           = os.getenv("PARSER",       "mineru")
+WORKING_DIR = os.getenv("WORKING_DIR", "/app/rag_storage")
+UPLOAD_DIR = os.getenv("UPLOAD_DIR", "/app/uploads")
+OUTPUT_DIR = os.getenv("OUTPUT_DIR", "/app/output")
+PARSER = os.getenv("PARSER", "mineru")
+HIDDEN_TYPES_FILE = (
+    Path(os.environ.get("WORKING_DIR", "/app/data/rag_storage")) / "hidden_types.json"
+)
 
 # Persists completed doc filenames across restarts
-COMPLETED_LOG    = Path(WORKING_DIR) / "completed_docs.json"
+COMPLETED_LOG = Path(WORKING_DIR) / "completed_docs.json"
 
 
 def _load_completed() -> dict:
@@ -80,17 +83,22 @@ def _load_completed() -> dict:
     return {}
 
 
-def _save_completed(filename: str, chunks: int, nodes: int, relations: int, finished_at: float):
+def _save_completed(
+    filename: str, chunks: int, nodes: int, relations: int, finished_at: float
+):
     """Append a successfully completed doc to the persistent log."""
     try:
         docs = _load_completed()
         docs[filename] = {
-            "chunks": chunks, "nodes": nodes,
-            "relations": relations, "finished_at": finished_at,
+            "chunks": chunks,
+            "nodes": nodes,
+            "relations": relations,
+            "finished_at": finished_at,
         }
         COMPLETED_LOG.write_text(json.dumps(docs, indent=2))
     except Exception as e:
         logging.getLogger(__name__).warning(f"Could not save completed_docs.json: {e}")
+
 
 # ---------------------------------------------------------------------------
 # Job tracking
@@ -165,13 +173,13 @@ def new_job(filename: str) -> Job:
 # ---------------------------------------------------------------------------
 class JobLogHandler(logging.Handler):
     _CHUNK_PATTERNS = ("processing chunk", "chunk ", "inserting chunk", "split into")
-    _NODE_PATTERNS  = ("entit", "extract")
-    _EDGE_PATTERNS  = ("upsert_chunk",)
-    _DONE_PATTERNS  = ("completed merging",)
+    _NODE_PATTERNS = ("entit", "extract")
+    _EDGE_PATTERNS = ("upsert_chunk",)
+    _DONE_PATTERNS = ("completed merging",)
 
     _BLOCK_TYPE_HEADER = "content block types:"
-    _BLOCK_TYPE_LINE   = re.compile(r"\s*-\s*(\w+):\s*(\d+)")
-    _MULTIMODAL_RE     = re.compile(
+    _BLOCK_TYPE_LINE = re.compile(r"\s*-\s*(\w+):\s*(\d+)")
+    _MULTIMODAL_RE = re.compile(
         r"multimodal chunk generation progress:\s*(\d+)/(\d+)", re.IGNORECASE
     )
 
@@ -202,9 +210,10 @@ class JobLogHandler(logging.Handler):
             m = self._MULTIMODAL_RE.search(msg)
             if m:
                 self.job.multimodal_progress = int(m.group(1))
-                self.job.multimodal_total    = int(m.group(2))
+                self.job.multimodal_total = int(m.group(2))
                 self.job.push(
-                    "multimodal_progress", msg,
+                    "multimodal_progress",
+                    msg,
                     current=self.job.multimodal_progress,
                     total=self.job.multimodal_total,
                 )
@@ -213,9 +222,9 @@ class JobLogHandler(logging.Handler):
             if any(p in msg_lower for p in self._DONE_PATTERNS):
                 nums = re.findall(r"\d+", msg)
                 if len(nums) >= 3:
-                    self.job.nodes     = int(nums[0]) + int(nums[1])
+                    self.job.nodes = int(nums[0]) + int(nums[1])
                     self.job.relations = int(nums[2])
-                    self.job.push("node",     msg, total=self.job.nodes)
+                    self.job.push("node", msg, total=self.job.nodes)
                     self.job.push("relation", msg, total=self.job.relations)
                 return
 
@@ -289,8 +298,12 @@ async def ollama_llm(prompt, system_prompt=None, history_messages=None, **kwargs
 
 
 async def ollama_vision(
-    prompt, system_prompt=None, history_messages=None,
-    image_data=None, messages=None, **kwargs
+    prompt,
+    system_prompt=None,
+    history_messages=None,
+    image_data=None,
+    messages=None,
+    **kwargs,
 ):
     if not VISION_MODEL:
         return await ollama_llm(prompt, system_prompt, history_messages, **kwargs)
@@ -312,7 +325,12 @@ async def ollama_vision(
         async with httpx.AsyncClient(timeout=7200) as client:
             resp = await client.post(
                 f"{OLLAMA_BASE_URL}/api/chat",
-                json={"model": VISION_MODEL, "messages": built, "stream": False, "format": "json"},
+                json={
+                    "model": VISION_MODEL,
+                    "messages": built,
+                    "stream": False,
+                    "format": "json",
+                },
             )
             resp.raise_for_status()
             return resp.json()["message"]["content"]
@@ -359,14 +377,14 @@ async def lifespan(app: FastAPI):
         Path(d).mkdir(parents=True, exist_ok=True)
 
     for k, v in [
-        ("NEO4J_URI",      NEO4J_URI),
+        ("NEO4J_URI", NEO4J_URI),
         ("NEO4J_USERNAME", NEO4J_USERNAME),
         ("NEO4J_PASSWORD", NEO4J_PASSWORD),
         ("NEO4J_DATABASE", NEO4J_DATABASE),
     ]:
         os.environ.setdefault(k, v)
 
-    os.environ["LLM_TIMEOUT"]       = os.getenv("LLM_TIMEOUT",       "7200")
+    os.environ["LLM_TIMEOUT"] = os.getenv("LLM_TIMEOUT", "7200")
     os.environ["EMBEDDING_TIMEOUT"] = os.getenv("EMBEDDING_TIMEOUT", "300")
 
     config = RAGAnythingConfig(
@@ -423,7 +441,9 @@ _app = FastAPI(title="RAG-Anything Service", lifespan=lifespan)
 
 FRONTEND_DIR = Path(__file__).parent / "frontend"
 if FRONTEND_DIR.exists():
-    _app.mount("/ui", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="frontend")
+    _app.mount(
+        "/ui", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="frontend"
+    )
 
 
 @_app.get("/", response_class=HTMLResponse)
@@ -456,12 +476,15 @@ async def _process_document(job: Job, file_path: str):
         logging.getLogger(name).addHandler(handler)
 
     try:
-        job.status     = "parsing"
+        job.status = "parsing"
         job.started_at = time.time()
         job.push("status", f"Parsing {job.filename} …")
         job.push("log", "Using MinerU pipeline backend (layout detection + OCR)")
         if VISION_MODEL:
-            job.push("log", f"Vision model ({VISION_MODEL}) will process images/tables/equations")
+            job.push(
+                "log",
+                f"Vision model ({VISION_MODEL}) will process images/tables/equations",
+            )
 
         stem = Path(file_path).stem
         for stale in Path(OUTPUT_DIR).glob(f"{stem}*"):
@@ -477,19 +500,23 @@ async def _process_document(job: Job, file_path: str):
             display_stats=True,
         )
 
-        job.status      = "done"
+        job.status = "done"
         job.finished_at = time.time()
         job.push(
             "done",
             f"✓ Finished — {job.chunks} chunks · {job.nodes} nodes · {job.relations} relations",
-            chunks=job.chunks, nodes=job.nodes, relations=job.relations,
+            chunks=job.chunks,
+            nodes=job.nodes,
+            relations=job.relations,
         )
-        _save_completed(job.filename, job.chunks, job.nodes, job.relations, job.finished_at)
+        _save_completed(
+            job.filename, job.chunks, job.nodes, job.relations, job.finished_at
+        )
 
     except Exception as exc:
-        job.status      = "error"
+        job.status = "error"
         job.finished_at = time.time()
-        job.error       = str(exc)
+        job.error = str(exc)
         job.push("error", f"✗ {exc}")
         _base_logger.exception("Processing failed for %s", job.filename)
     finally:
@@ -503,17 +530,17 @@ async def _process_document(job: Job, file_path: str):
 @app.get("/health")
 def health():
     return {
-        "status":          "ok",
-        "vision_model":    VISION_MODEL or "not configured",
-        "llm_model":       LLM_MODEL,
+        "status": "ok",
+        "vision_model": VISION_MODEL or "not configured",
+        "llm_model": LLM_MODEL,
         "embedding_model": EMBEDDING_MODEL,
     }
 
 
 @app.get("/stats")
 async def get_stats():
-    jobs   = [_jobs[jid] for jid in _jobs_order if jid in _jobs]
-    done   = [j for j in jobs if j.status == "done"]
+    jobs = [_jobs[jid] for jid in _jobs_order if jid in _jobs]
+    done = [j for j in jobs if j.status == "done"]
     failed = [j for j in jobs if j.status == "error"]
     active = [j for j in jobs if j.status in ("parsing", "processing")]
 
@@ -521,6 +548,7 @@ async def get_stats():
     total_nodes = total_relations = 0
     try:
         from neo4j import AsyncGraphDatabase
+
         async with AsyncGraphDatabase.driver(
             NEO4J_URI, auth=(NEO4J_USERNAME, NEO4J_PASSWORD)
         ) as driver:
@@ -537,16 +565,35 @@ async def get_stats():
     processed_count = len(completed)
 
     return {
-        "total_docs":      processed_count,
-        "processed":       processed_count,
-        "failed":          len(failed),
-        "active":          len(active),
-        "queued":          len(_processing_queue),
-        "total_nodes":     total_nodes,
+        "total_docs": processed_count,
+        "processed": processed_count,
+        "failed": len(failed),
+        "active": len(active),
+        "queued": len(_processing_queue),
+        "total_nodes": total_nodes,
         "total_relations": total_relations,
-        "queue_paused":    _queue_paused,
-        "current_job":     _current_job.to_dict() if _current_job else None,
+        "queue_paused": _queue_paused,
+        "current_job": _current_job.to_dict() if _current_job else None,
     }
+
+
+@_app.get("/hidden-types")
+async def get_hidden_types():
+    if HIDDEN_TYPES_FILE.exists():
+        try:
+            with open(HIDDEN_TYPES_FILE, "r") as f:
+                return json.load(f)
+        except:
+            pass
+    # Default hidden types for brand new users
+    return ["discarded", "unknown"]
+
+
+@_app.post("/hidden-types")
+async def save_hidden_types(types: list[str]):
+    with open(HIDDEN_TYPES_FILE, "w") as f:
+        json.dump(types, f)
+    return {"status": "ok"}
 
 
 @app.get("/processed-filenames")
@@ -563,12 +610,12 @@ async def get_graph(limit: int = 300, search: str = ""):
     - With search: 2-hop neighborhood around matching nodes
     """
     from neo4j import AsyncGraphDatabase
+
     try:
         async with AsyncGraphDatabase.driver(
             NEO4J_URI, auth=(NEO4J_USERNAME, NEO4J_PASSWORD)
         ) as driver:
             async with driver.session(database=NEO4J_DATABASE) as session:
-
                 if search.strip():
                     # Neighborhood search — find matching nodes then expand 2 hops
                     cypher = """
@@ -626,14 +673,14 @@ async def get_graph(limit: int = 300, search: str = ""):
 
                     if src not in nodes:
                         nodes[src] = {
-                            "id":   src,
+                            "id": src,
                             "type": (row["src_type"] or "unknown").lower(),
                             "desc": row["src_desc"][:200] if row["src_desc"] else "",
                             "degree": 0,
                         }
                     if tgt not in nodes:
                         nodes[tgt] = {
-                            "id":   tgt,
+                            "id": tgt,
                             "type": (row["tgt_type"] or "unknown").lower(),
                             "desc": row["tgt_desc"][:200] if row["tgt_desc"] else "",
                             "degree": 0,
@@ -641,12 +688,14 @@ async def get_graph(limit: int = 300, search: str = ""):
 
                     nodes[src]["degree"] += 1
                     nodes[tgt]["degree"] += 1
-                    links.append({
-                        "source": src,
-                        "target": tgt,
-                        "label":  (row["rel_label"] or "")[:80],
-                        "weight": float(row["weight"] or 1.0),
-                    })
+                    links.append(
+                        {
+                            "source": src,
+                            "target": tgt,
+                            "label": (row["rel_label"] or "")[:80],
+                            "weight": float(row["weight"] or 1.0),
+                        }
+                    )
 
                 return {"nodes": list(nodes.values()), "links": links}
 
@@ -692,11 +741,13 @@ def list_uploads():
     files = []
     for f in Path(UPLOAD_DIR).iterdir():
         if f.is_file():
-            files.append({
-                "filename": f.name,
-                "size":     f.stat().st_size,
-                "modified": f.stat().st_mtime,
-            })
+            files.append(
+                {
+                    "filename": f.name,
+                    "size": f.stat().st_size,
+                    "modified": f.stat().st_mtime,
+                }
+            )
     return sorted(files, key=lambda x: x["modified"], reverse=True)
 
 
@@ -738,7 +789,11 @@ async def upload_document(file: UploadFile = File(...)):
     job.push("queued", f"File received: {file.filename}")
     _processing_queue.append((job, str(dest)))
 
-    return {"job_id": job.id, "filename": file.filename, "queue_position": len(_processing_queue)}
+    return {
+        "job_id": job.id,
+        "filename": file.filename,
+        "queue_position": len(_processing_queue),
+    }
 
 
 @app.get("/progress/{job_id}")
@@ -748,7 +803,7 @@ async def progress_stream(job_id: str, from_index: int = 0):
         raise HTTPException(status_code=404, detail="Job not found")
 
     async def generate() -> AsyncGenerator[str, None]:
-        job  = _jobs[job_id]
+        job = _jobs[job_id]
         sent = from_index
         idle = 0
         while True:
@@ -756,7 +811,7 @@ async def progress_stream(job_id: str, from_index: int = 0):
             while sent < len(events):
                 yield f"data: {json.dumps({'index': sent, **events[sent]})}\n\n"
                 sent += 1
-                idle  = 0
+                idle = 0
 
             if job.status in ("done", "error"):
                 events = list(job.events)
@@ -788,7 +843,10 @@ class QueryRequest(BaseModel):
 # Intercept LightRAG query logs to capture retrieved entity names
 class QueryLogCapture(logging.Handler):
     """Captures the 'Query nodes:' log line emitted by LightRAG during a query."""
-    _QUERY_NODES_RE = re.compile(r'Query nodes?:\s*(.+?)(?:\s*\(top_k|$)', re.IGNORECASE)
+
+    _QUERY_NODES_RE = re.compile(
+        r"Query nodes?:\s*(.+?)(?:\s*\(top_k|$)", re.IGNORECASE
+    )
 
     def __init__(self):
         super().__init__()
@@ -808,6 +866,7 @@ async def _resolve_node_ids(entity_names: list[str]) -> list[str]:
         return []
     try:
         from neo4j import AsyncGraphDatabase
+
         async with AsyncGraphDatabase.driver(
             NEO4J_URI, auth=(NEO4J_USERNAME, NEO4J_PASSWORD)
         ) as driver:
@@ -859,7 +918,10 @@ async def query(req: QueryRequest):
             return {"context": "No relevant information found.", "mode": req.mode}
         return {"context": str(answer), "mode": req.mode}
 
-    result: dict = {"answer": str(answer) if answer else "No results found.", "mode": req.mode}
+    result: dict = {
+        "answer": str(answer) if answer else "No results found.",
+        "mode": req.mode,
+    }
 
     if req.return_nodes and capture:
         result["highlighted_nodes"] = await _resolve_node_ids(capture.entity_names)
