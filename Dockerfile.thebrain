@@ -1,0 +1,32 @@
+FROM python:3.11-slim
+
+# System dependencies: LibreOffice for Office docs, plus build tools
+RUN apt-get update && apt-get install -y --no-install-recommends \
+  libreoffice \
+  libgl1 \
+  libglib2.0-0 \
+  libsm6 \
+  libxrender1 \
+  libxext6 \
+  curl \
+  git \
+  && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Install Python dependencies
+# MinerU (magic-pdf) is RAG-Anything's document parser
+COPY raganything/requirements.txt .
+COPY raganything/frontend ./frontend
+RUN pip install --no-cache-dir torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy application code
+COPY raganything/app.py .
+
+# Folder for uploaded documents and parsed output
+RUN mkdir -p /app/uploads /app/output /app/rag_storage
+
+EXPOSE 8100
+
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8100"]

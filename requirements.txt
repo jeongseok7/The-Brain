@@ -1,0 +1,14 @@
+# RAG-Anything + LightRAG core
+raganything[all]
+lightrag-hku
+
+# FastAPI server
+fastapi
+uvicorn[standard]
+python-multipart
+
+# Async HTTP client (for Ollama)
+httpx
+
+# Rerank
+sentence-transformers>=3.0.0
