@@ -10,6 +10,7 @@
 
 <link rel="stylesheet" href="/ui/style.css">
 
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
   <script src="https://unpkg.com/three@0.128.0/examples/js/postprocessing/EffectComposer.js"></script>
   <script src="https://unpkg.com/three@0.128.0/examples/js/postprocessing/RenderPass.js"></script>
@@ -142,7 +143,7 @@
       <div class="drop-zone" id="drop-zone" onclick="document.getElementById('file-input').click()">
         <div class="drop-icon">⬆</div>
         <div class="drop-title">Drop files here or click to browse</div>
-        <div class="drop-sub">Files are queued and processed one at a time</div>
+        <div class="drop-sub">Files are queued and then processed...</div>
         <div class="drop-types">
           <span class="drop-type-tag">PDF</span>
           <span class="drop-type-tag">DOCX</span>
@@ -232,48 +233,56 @@
     </div>
 
     <!-- ══ QUERY ════════════════════════════════════════════════════════ -->
-    <div class="tab-panel" id="tab-query">
-      <div class="glass-card chat-layout">
+    <div class="tab-panel" id="tab-query" style="padding: 90px 24px 24px 24px;">
+      <div class="query-container">
         
-        <div class="chat-history" id="query-answer" style="display: none;">
-          <div class="answer-header">
-            <span class="answer-label" style="color: var(--green)">The Brain Says:</span>
-            <button class="copy-btn" onclick="copyAnswer()">Copy</button>
+        <div class="glass-card query-sidebar-left">
+          <div class="sidebar-header">
+            <span>Chat History</span>
+            <button class="btn btn-secondary btn-sm" onclick="newConversation()" style="padding:4px 8px; font-size:9px;">+ New</button>
           </div>
-          <div class="answer-text" id="answer-text"></div>
-        </div>
-        <div class="chat-history empty-state" id="query-empty" style="display: flex; align-items: center; justify-content: center;">
-          Ask a question about your knowledge base to begin.
+          <div id="conv-list" class="conv-list">
+            <div style="font-size:11px;color:var(--text-dim);text-align:center;margin-top:20px;">No history</div>
+          </div>
         </div>
 
-        <div class="query-input-row">
-          <textarea class="query-input" id="query-input"
-            placeholder="Ask something about your documents… (Ctrl+Enter to submit)"
-            rows="1"
-            onkeydown="handleQueryKey(event)"
-            oninput="autoResize(this)"></textarea>
-          
-          <div class="mode-wrapper">
-            <select class="mode-select" id="mode-select">
-              <option value="mix">mix</option>
-              <option value="hybrid">hybrid</option>
-              <option value="local">local</option>
-              <option value="global">global</option>
-              <option value="naive">naive</option>
-            </select>
-            <div class="tooltip-container">
-              <span class="help-icon">?</span>
-              <div class="tooltip-text">
-                <b>mix:</b> Vector + Local + Global graph<br>
-                <b>hybrid:</b> Vector + Local graph<br>
-                <b>local:</b> Specific entities & neighbors<br>
-                <b>global:</b> Broad themes & communities<br>
-                <b>naive:</b> Standard vector search only
-              </div>
-            </div>
+        <div class="glass-card query-main">
+          <div id="chat-messages" class="chat-messages">
+            <div class="empty-state" style="margin:auto">Start a new conversation</div>
           </div>
-          <button class="btn btn-primary" id="ask-btn" onclick="submitQuery()">Ask</button>
+          
+          <div class="query-input-row">
+            <textarea class="query-input" id="query-input"
+              placeholder="Ask something about your documents… (Ctrl+Enter to submit)"
+              rows="1"
+              onkeydown="handleQueryKey(event)"
+              oninput="autoResize(this)"></textarea>
+            
+            <div class="mode-wrapper">
+              <select class="mode-select" id="mode-select">
+                <option value="mix">mix</option>
+                <option value="hybrid">hybrid</option>
+                <option value="local">local</option>
+                <option value="global">global</option>
+                <option value="naive">naive</option>
+              </select>
+            </div>
+            <button class="btn btn-primary" id="ask-btn" onclick="submitChat()">Ask</button>
+          </div>
         </div>
+
+        <div class="query-sidebar-right">
+          <div class="glass-card query-live-log" id="query-live-log">
+            <div class="sidebar-header"><span>Live Query Log</span></div>
+            <div id="query-log-stream" class="log-stream-mini">Waiting for query...</div>
+          </div>
+          
+          <div class="glass-card query-stats" id="query-stats" style="display:none;">
+            <div class="sidebar-header" style="margin-bottom:8px;"><span>Query Stats</span></div>
+            <div id="query-stats-content"></div>
+          </div>
+        </div>
+
       </div>
     </div>
 

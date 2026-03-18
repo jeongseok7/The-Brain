@@ -57,6 +57,7 @@ async function init() {
   } catch {
     document.getElementById('status-dot').classList.remove('online');
   }
+  await loadConversations();
   await refreshAll();
   setInterval(refreshAll, 4000);
 }
@@ -561,46 +562,203 @@ function toggleAutoScroll() {
 }
 
 // ─── Query ─────────────────────────────────────────────────────────────────
+let chatConversations = [];
+let currentChatId = null;
+
+async function loadConversations() {
+  try { chatConversations = await api('GET', '/conversations'); } 
+  catch { chatConversations = []; }
+  
+  if (chatConversations.length > 0) currentChatId = chatConversations[0].id;
+  renderConversations();
+  renderChat();
+}
+
+async function saveConversations() {
+  try { 
+    await api('POST', '/conversations', chatConversations); 
+  } catch(e) { 
+    console.error("Failed to save chat:", e); 
+  }
+}
+
+function newConversation() {
+  currentChatId = Date.now().toString();
+  chatConversations.unshift({ id: currentChatId, title: "New Conversation", messages: [] });
+  saveConversations();
+  renderConversations();
+  renderChat();
+  document.getElementById('query-input').focus();
+}
+
+function selectConversation(id) {
+  currentChatId = id;
+  renderConversations();
+  renderChat();
+}
+
+function deleteConversation(e, id) {
+  e.stopPropagation();
+  chatConversations = chatConversations.filter(c => c.id !== id);
+  if (currentChatId === id) {
+    currentChatId = chatConversations.length ? chatConversations[0].id : null;
+  }
+  saveConversations();
+  renderConversations();
+  renderChat();
+}
+
+function renderConversations() {
+  const list = document.getElementById('conv-list');
+  if (!chatConversations.length) { 
+    list.innerHTML = '<div style="font-size:11px;color:var(--text-dim);text-align:center;margin-top:20px;">No history</div>'; 
+    return; 
+  }
+  list.innerHTML = chatConversations.map(c => `
+    <div class="conv-item ${c.id === currentChatId ? 'active' : ''}" onclick="selectConversation('${c.id}')">
+      <div class="conv-title" title="${escHtml(c.title)}">${escHtml(c.title)}</div>
+      <div class="conv-delete" onclick="deleteConversation(event, '${c.id}')">✕</div>
+    </div>
+  `).join('');
+}
+
+function renderChat() {
+  const box = document.getElementById('chat-messages');
+  if (!currentChatId) {
+    box.innerHTML = '<div class="empty-state" style="margin:auto">Select or start a new conversation.</div>';
+    return;
+  }
+  const conv = chatConversations.find(c => c.id === currentChatId);
+  if (!conv || !conv.messages.length) {
+    box.innerHTML = '<div class="empty-state" style="margin:auto">Ask a question to begin.</div>';
+    return;
+  }
+  
+  box.innerHTML = conv.messages.map(m => {
+    // If it's the AI, parse it as Markdown. If it's the user, just escape it normally.
+    const content = m.role === 'ai' ? marked.parse(m.text) : escHtml(m.text).replace(/\n/g, '<br>');
+    
+    return `
+      <div class="chat-bubble ${m.role}">
+        ${m.role === 'ai' ? '<div style="font-size:9px;color:var(--green);margin-bottom:6px;text-transform:uppercase;letter-spacing:1px;font-weight:bold;">The Brain</div>' : ''}
+        <div class="markdown-body">${content}</div>
+      </div>
+    `;
+  }).join('');
+  box.scrollTop = box.scrollHeight;
+}
+
 function handleQueryKey(e) {
-  if (e.ctrlKey && e.key === 'Enter') { e.preventDefault(); submitQuery(); }
+  if (e.ctrlKey && e.key === 'Enter') { e.preventDefault(); submitChat(); }
 }
 
 function autoResize(el) {
-  el.style.height = ''; el.style.height = Math.min(el.scrollHeight, 100) + 'px';
+  el.style.height = 'auto'; 
+  el.style.height = Math.min(el.scrollHeight, 100) + 'px';
 }
 
-async function submitQuery() {
-  const q    = document.getElementById('query-input').value.trim();
+async function submitChat() {
+  const input = document.getElementById('query-input');
+  const q = input.value.trim();
   const mode = document.getElementById('mode-select').value;
   if (!q) return;
 
-  const ansDiv  = document.getElementById('query-answer');
-  const ansText = document.getElementById('answer-text');
-  const askBtn  = document.getElementById('ask-btn');
+  if (!currentChatId) newConversation();
+  const conv = chatConversations.find(c => c.id === currentChatId);
 
-  ansDiv.classList.add('visible');
-  document.getElementById('query-empty').style.display = 'none';
-  ansDiv.style.display = 'block';
-  ansText.innerHTML = '<span class="thinking-indicator">Thinking…</span>';
-  askBtn.disabled   = true;
-  askBtn.textContent = '…';
+  // Set title on first message
+  if (conv.messages.length === 0) conv.title = q;
+
+  // Push user message & render
+  conv.messages.push({ role: 'user', text: q });
+  input.value = '';
+  input.style.height = 'auto'; 
+  saveConversations();
+  renderConversations();
+  renderChat();
+
+  const askBtn = document.getElementById('ask-btn');
+  askBtn.disabled = true;
+  askBtn.textContent = '...';
+
+  // Thinking bubble
+  const box = document.getElementById('chat-messages');
+  const thinkId = 'think-' + Date.now();
+  box.insertAdjacentHTML('beforeend', `<div class="chat-bubble ai" id="${thinkId}"><span class="thinking-indicator">Thinking...</span></div>`);
+  box.scrollTop = box.scrollHeight;
+
+  startLiveLog(q, mode);
+
+  await new Promise(resolve => setTimeout(resolve, 300));
 
   try {
-    const r = await api('POST', '/query', { question: q, mode, return_nodes: true });
-    ansText.textContent = r.answer || '(no answer)';
+    const r = await api('POST', '/query', { question: q, mode: mode, return_nodes: true });
+    conv.messages.push({ role: 'ai', text: r.answer || '(no answer)' });
+    finishLiveLog(true);
   } catch (e) {
-    ansText.innerHTML = `<span style="color:var(--red)">Error: ${escHtml(e.message)}</span>`;
+    conv.messages.push({ role: 'ai', text: `Error: ${e.message}` });
+    document.getElementById('query-log-stream').innerHTML += `<div class="warn">Error: ${escHtml(e.message)}</div>`;
+    finishLiveLog(false);
   } finally {
-    askBtn.disabled   = false;
+    document.getElementById(thinkId)?.remove();
+    saveConversations();
+    renderChat();
+    askBtn.disabled = false;
     askBtn.textContent = 'Ask';
   }
 }
 
-function copyAnswer() {
-  const text = document.getElementById('answer-text').textContent;
-  navigator.clipboard.writeText(text).catch(() => {});
+// --- REAL-TIME QUERY LOG STREAM ---
+let liveLogSource = null;
+
+function startLiveLog(q, mode) {
+  const stream = document.getElementById('query-log-stream');
+  const stats = document.getElementById('query-stats');
+  stats.style.display = 'none';
+  
+  stream.innerHTML = `
+    <div class="info">INFO: Executing text query...</div>
+    <div class="info">INFO: Query mode: ${mode}</div>
+  `;
+
+  if (liveLogSource) liveLogSource.close();
+  
+  // Connect to the new Python SSE endpoint
+  liveLogSource = new EventSource('/logs/live');
+  
+  liveLogSource.onmessage = (e) => {
+    try {
+      const data = JSON.parse(e.data);
+      const isWarnOrErr = data.level === 'warning' || data.level === 'error';
+      const cls = isWarnOrErr ? 'warn' : 'info';
+      const prefix = data.level === 'warning' ? 'WARN: ' : (data.level === 'error' ? 'ERR: ' : 'INFO: ');
+      
+      stream.innerHTML += `<div class="${cls}">${prefix}${escHtml(data.message)}</div>`;
+      stream.scrollTop = stream.scrollHeight;
+    } catch (err) {}
+  };
 }
 
+function finishLiveLog(success) {
+  if (liveLogSource) {
+    liveLogSource.close();
+    liveLogSource = null;
+  }
+  
+  const stream = document.getElementById('query-log-stream');
+  stream.innerHTML += `<div class="info" style="color:var(--green); font-weight:bold; margin-top:8px;">✓ Query processing completed.</div>`;
+  stream.scrollTop = stream.scrollHeight;
+
+  const stats = document.getElementById('query-stats');
+  const content = document.getElementById('query-stats-content');
+  stats.style.display = 'block';
+
+  const modelName = document.getElementById('model-tag').textContent;
+  content.innerHTML = `
+    <div class="q-stat-row"><span>Status:</span><span class="q-stat-val">${success ? 'Success' : 'Failed'}</span></div>
+    <div class="q-stat-row"><span>Model:</span><span class="q-stat-val">${modelName}</span></div>
+  `;
+}
 // ─── Queue pause / resume ─────────────────────────────────────────────────
 async function toggleQueuePause() {
   const paused = S.stats.queue_paused;

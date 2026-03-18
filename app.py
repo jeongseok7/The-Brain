@@ -32,7 +32,7 @@ from typing import AsyncGenerator
 
 import numpy as np
 import httpx
-from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi import FastAPI, File, UploadFile, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, StreamingResponse
@@ -65,9 +65,8 @@ WORKING_DIR = os.getenv("WORKING_DIR", "/app/rag_storage")
 UPLOAD_DIR = os.getenv("UPLOAD_DIR", "/app/uploads")
 OUTPUT_DIR = os.getenv("OUTPUT_DIR", "/app/output")
 PARSER = os.getenv("PARSER", "mineru")
-HIDDEN_TYPES_FILE = (
-    Path(os.environ.get("WORKING_DIR", "/app/data/rag_storage")) / "hidden_types.json"
-)
+HIDDEN_TYPES_FILE = Path(WORKING_DIR) / "hidden_types.json"
+CONV_FILE = Path(WORKING_DIR) / "conversations.json"
 
 # Persists completed doc filenames across restarts
 COMPLETED_LOG = Path(WORKING_DIR) / "completed_docs.json"
@@ -262,7 +261,9 @@ def get_reranker() -> CrossEncoder:
 async def rerank_func(query: str, documents: list[str], top_n: int = 20):
     loop = asyncio.get_event_loop()
     pairs = [[query, doc] for doc in documents]
-    scores = await loop.run_in_executor(None, get_reranker().predict, pairs)
+    scores = await loop.run_in_executor(
+        None, lambda: get_reranker().predict(pairs, show_progress_bar=True)
+    )
     results = [{"index": i, "relevance_score": float(s)} for i, s in enumerate(scores)]
     results.sort(key=lambda x: x["relevance_score"], reverse=True)
     _base_logger.info(
@@ -352,7 +353,7 @@ async def ollama_embed(texts: list[str]) -> np.ndarray:
 # App lifespan
 # ---------------------------------------------------------------------------
 rag: RAGAnything | None = None
-_base_logger = logging.getLogger(__name__)
+_base_logger = logging.getLogger("uvicorn.error")
 
 
 async def _queue_worker():
@@ -371,6 +372,7 @@ async def _queue_worker():
 async def lifespan(app: FastAPI):
     global rag
     logging.basicConfig(level=logging.INFO)
+    logging.getLogger().setLevel(logging.INFO)
     _base_logger.info("Initialising RAGAnything …")
 
     for d in (WORKING_DIR, UPLOAD_DIR, OUTPUT_DIR):
@@ -927,3 +929,78 @@ async def query(req: QueryRequest):
         result["highlighted_nodes"] = await _resolve_node_ids(capture.entity_names)
 
     return result
+
+
+@_app.get("/conversations")
+async def get_conversations():
+    if CONV_FILE.exists():
+        try:
+            with open(CONV_FILE, "r") as f:
+                return json.load(f)
+        except:
+            pass
+    return []
+
+
+@_app.post("/conversations")
+async def save_conversations(request: Request):
+    try:
+        # Grab the raw JSON directly to avoid FastAPI validation errors
+        convs = await request.json()
+        with open(CONV_FILE, "w") as f:
+            json.dump(convs, f)
+        return {"status": "ok"}
+    except Exception as e:
+        _base_logger.error(f"Failed to save conversations: {e}")
+        return {"status": "error", "detail": str(e)}
+
+
+# --- 2. REAL-TIME LOG STREAMING ---
+live_log_clients = set()
+
+
+class AsyncSSELogHandler(logging.Handler):
+    def emit(self, record):
+        msg = self.format(record)
+        level = record.levelname.lower()
+        data = json.dumps({"level": level, "message": msg})
+
+        try:
+            loop = asyncio.get_running_loop()
+            for q in list(live_log_clients):
+                loop.call_soon_threadsafe(q.put_nowait, data)
+        except RuntimeError:
+            pass
+
+
+# Attach to root logger
+sse_handler = AsyncSSELogHandler()
+sse_handler.setFormatter(logging.Formatter("%(message)s"))
+
+logging.getLogger().addHandler(sse_handler)
+logging.getLogger("lightrag").addHandler(sse_handler)
+logging.getLogger("raganything").addHandler(sse_handler)
+
+
+@_app.get("/logs/live")
+async def live_logs_stream(request: Request):
+    q = asyncio.Queue(maxsize=200)
+    live_log_clients.add(q)
+
+    async def log_generator():
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    msg = await asyncio.wait_for(q.get(), timeout=1.0)
+                    yield f"data: {msg}\n\n"
+                except asyncio.TimeoutError:
+                    yield f": keepalive\n\n"
+        except Exception:
+            pass
+        finally:
+            if q in live_log_clients:
+                live_log_clients.remove(q)
+
+    return StreamingResponse(log_generator(), media_type="text/event-stream")
