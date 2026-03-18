@@ -41,34 +41,49 @@ from sentence_transformers import CrossEncoder
 
 from lightrag import LightRAG
 from lightrag.utils import EmbeddingFunc
+from lightrag.llm.openai import openai_complete_if_cache
 from raganything import RAGAnything, RAGAnythingConfig
 
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
+
+# Fallback local Ollama
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-LIGHTRAG_API_URL = os.getenv("LIGHTRAG_API_URL", "http://localhost:9621")
+
+# External API (OpenAI, DeepSeek, Groq, etc.)
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+
+# Model names
 LLM_MODEL = os.getenv("LLM_MODEL", "qwen3.5:9b")
 VISION_MODEL = os.getenv("VISION_MODEL", "qwen2.5vl:latest")
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "qwen3-embedding:8b")
-EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM", "4096"))
-MAX_EMBED_TOKENS = int(os.getenv("MAX_EMBED_TOKENS", "8192"))
+
+# Model settings
 CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "600"))
 CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP_SIZE", "100"))
+LLM_NUM_CTX = int(os.getenv("LLM_NUM_CTX", "32768"))
+LLM_TIMEOUT = int(os.getenv("LLM_TIMEOUT", "7200"))
+LLM_MAX_ASYNC = int(os.getenv("LLM_MAX_ASYNC", "1"))
+EMBEDDING_TIMEOUT = int(os.getenv("EMBEDDING_TIMEOUT", "300"))
+EMBEDDING_MAX_ASYNC = int(os.getenv("EMBEDDING_MAX_ASYNC", "1"))
+EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM", "4096"))
+MAX_EMBED_TOKENS = int(os.getenv("MAX_EMBED_TOKENS", "8192"))
 
+# Neo4j
 NEO4J_URI = os.getenv("NEO4J_URI", "bolt://localhost:7687")
 NEO4J_USERNAME = os.getenv("NEO4J_USERNAME", "neo4j")
 NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "")
 NEO4J_DATABASE = os.getenv("NEO4J_DATABASE", "neo4j")
 
+# Filestructure
 WORKING_DIR = os.getenv("WORKING_DIR", "/app/rag_storage")
 UPLOAD_DIR = os.getenv("UPLOAD_DIR", "/app/uploads")
 OUTPUT_DIR = os.getenv("OUTPUT_DIR", "/app/output")
 PARSER = os.getenv("PARSER", "mineru")
 HIDDEN_TYPES_FILE = Path(WORKING_DIR) / "hidden_types.json"
 CONV_FILE = Path(WORKING_DIR) / "conversations.json"
-
-# Persists completed doc filenames across restarts
 COMPLETED_LOG = Path(WORKING_DIR) / "completed_docs.json"
 
 
@@ -284,14 +299,14 @@ async def ollama_llm(prompt, system_prompt=None, history_messages=None, **kwargs
     for m in history_messages:
         messages.append(m)
     messages.append({"role": "user", "content": prompt})
-    async with httpx.AsyncClient(timeout=7200) as client:
+    async with httpx.AsyncClient(timeout=LLM_TIMEOUT) as client:
         resp = await client.post(
             f"{OLLAMA_BASE_URL}/api/chat",
             json={
                 "model": LLM_MODEL,
                 "messages": messages,
                 "stream": False,
-                "options": {"num_ctx": 32768},
+                "options": {"num_ctx": LLM_NUM_CTX},
             },
         )
         resp.raise_for_status()
@@ -310,7 +325,7 @@ async def ollama_vision(
         return await ollama_llm(prompt, system_prompt, history_messages, **kwargs)
 
     if messages:
-        async with httpx.AsyncClient(timeout=7200) as client:
+        async with httpx.AsyncClient(timeout=LLM_TIMEOUT) as client:
             resp = await client.post(
                 f"{OLLAMA_BASE_URL}/v1/chat/completions",
                 json={"model": VISION_MODEL, "messages": messages, "stream": False},
@@ -323,7 +338,7 @@ async def ollama_vision(
         if system_prompt:
             built.append({"role": "system", "content": system_prompt})
         built.append({"role": "user", "content": prompt, "images": [image_data]})
-        async with httpx.AsyncClient(timeout=7200) as client:
+        async with httpx.AsyncClient(timeout=LLM_TIMEOUT) as client:
             resp = await client.post(
                 f"{OLLAMA_BASE_URL}/api/chat",
                 json={
@@ -340,13 +355,98 @@ async def ollama_vision(
 
 
 async def ollama_embed(texts: list[str]) -> np.ndarray:
-    async with httpx.AsyncClient(timeout=300) as client:
+    async with httpx.AsyncClient(timeout=EMBEDDING_TIMEOUT) as client:
         resp = await client.post(
             f"{OLLAMA_BASE_URL}/api/embed",
             json={"model": EMBEDDING_MODEL, "input": texts},
         )
         resp.raise_for_status()
         return np.array(resp.json()["embeddings"])
+
+
+# ---------------------------------------------------------------------------
+# External API (OpenAI-compatible) helpers
+# ---------------------------------------------------------------------------
+async def external_llm(prompt, system_prompt=None, history_messages=None, **kwargs):
+    return await openai_complete_if_cache(
+        LLM_MODEL,
+        prompt,
+        system_prompt=system_prompt,
+        history_messages=history_messages or [],
+        api_key=OPENAI_API_KEY,
+        base_url=OPENAI_BASE_URL,
+        **kwargs,
+    )
+
+
+async def external_vision(
+    prompt,
+    system_prompt=None,
+    history_messages=None,
+    image_data=None,
+    messages=None,
+    **kwargs,
+):
+    if not VISION_MODEL:
+        return await external_llm(prompt, system_prompt, history_messages, **kwargs)
+
+    # Handle native Multimodal Query format
+    if messages:
+        return await openai_complete_if_cache(
+            VISION_MODEL,
+            "",
+            system_prompt=None,
+            history_messages=[],
+            messages=messages,
+            api_key=OPENAI_API_KEY,
+            base_url=OPENAI_BASE_URL,
+            **kwargs,
+        )
+
+    # Handle standard image processing
+    if image_data:
+        built = []
+        if system_prompt:
+            built.append({"role": "system", "content": system_prompt})
+        built.append(
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/jpeg;base64,{image_data}"},
+                    },
+                ],
+            }
+        )
+        return await openai_complete_if_cache(
+            VISION_MODEL,
+            "",
+            system_prompt=None,
+            history_messages=[],
+            messages=built,
+            api_key=OPENAI_API_KEY,
+            base_url=OPENAI_BASE_URL,
+            **kwargs,
+        )
+
+    return await external_llm(prompt, system_prompt, history_messages, **kwargs)
+
+
+async def external_embed(texts: list[str]) -> np.ndarray:
+    headers = {
+        "Authorization": f"Bearer {OPENAI_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    async with httpx.AsyncClient(timeout=EMBEDDING_TIMEOUT) as client:
+        resp = await client.post(
+            f"{OPENAI_BASE_URL.rstrip('/')}/embeddings",
+            headers=headers,
+            json={"model": EMBEDDING_MODEL, "input": texts},
+        )
+        resp.raise_for_status()
+        return np.array([item["embedding"] for item in resp.json()["data"]])
 
 
 # ---------------------------------------------------------------------------
@@ -399,19 +499,31 @@ async def lifespan(app: FastAPI):
         enable_equation_processing=True,
     )
 
+    # === AUTO-SWITCH LOGIC ===
+    if OPENAI_API_KEY:
+        _base_logger.info("OPENAI_API_KEY detected. Routing LLM to External API.")
+        active_llm = external_llm
+        active_vision = external_vision if VISION_MODEL else None
+        active_embed = external_embed
+    else:
+        _base_logger.info("No OPENAI_API_KEY detected. Routing LLM to local Ollama.")
+        active_llm = ollama_llm
+        active_vision = ollama_vision if VISION_MODEL else None
+        active_embed = ollama_embed
+
     lightrag_instance = LightRAG(
         working_dir=WORKING_DIR,
         graph_storage="Neo4JStorage",
-        llm_model_func=ollama_llm,
-        llm_model_max_async=1,
+        llm_model_func=active_llm,
+        llm_model_max_async=LLM_MAX_ASYNC,
         chunk_token_size=CHUNK_SIZE,
         chunk_overlap_token_size=CHUNK_OVERLAP,
         embedding_func=EmbeddingFunc(
             embedding_dim=EMBEDDING_DIM,
             max_token_size=MAX_EMBED_TOKENS,
-            func=ollama_embed,
+            func=active_embed,
         ),
-        embedding_func_max_async=1,
+        embedding_func_max_async=EMBEDDING_MAX_ASYNC,
         rerank_model_func=rerank_func,
     )
     await lightrag_instance.initialize_storages()
@@ -419,12 +531,12 @@ async def lifespan(app: FastAPI):
     rag = RAGAnything(
         config=config,
         lightrag=lightrag_instance,
-        llm_model_func=ollama_llm,
-        vision_model_func=ollama_vision if VISION_MODEL else None,
+        llm_model_func=active_llm,
+        vision_model_func=active_vision,
         embedding_func=EmbeddingFunc(
             embedding_dim=EMBEDDING_DIM,
             max_token_size=MAX_EMBED_TOKENS,
-            func=ollama_embed,
+            func=active_embed,
         ),
     )
 
@@ -703,34 +815,6 @@ async def get_graph(limit: int = 300, search: str = ""):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/lightrag/documents")
-async def lightrag_documents():
-    """Proxy to LightRAG GET /documents — returns all docs grouped by status."""
-    try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.get(f"{LIGHTRAG_API_URL}/documents")
-            resp.raise_for_status()
-            return resp.json()
-    except httpx.ConnectError:
-        raise HTTPException(status_code=503, detail="LightRAG API not reachable")
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=str(e))
-
-
-@app.get("/lightrag/pipeline_status")
-async def lightrag_pipeline_status():
-    """Proxy to LightRAG GET /documents/pipeline_status."""
-    try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.get(f"{LIGHTRAG_API_URL}/documents/pipeline_status")
-            resp.raise_for_status()
-            return resp.json()
-    except httpx.ConnectError:
-        raise HTTPException(status_code=503, detail="LightRAG API not reachable")
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=str(e))
 
 
 @app.get("/jobs")
