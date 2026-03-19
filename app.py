@@ -871,6 +871,7 @@ async def upload_document(file: UploadFile = File(...)):
     if not file.filename:
         raise HTTPException(status_code=400, detail="File must have a filename")
 
+    safe_filename = re.sub(r"[^A-Za-z0-9_.-]", "_", file.filename)
     # Validate extension
     if Path(file.filename).suffix.lower() not in ALLOWED_EXTENSIONS:
         raise HTTPException(status_code=400, detail="File type not supported")
@@ -882,7 +883,7 @@ async def upload_document(file: UploadFile = File(...)):
 
     dest = Path(UPLOAD_DIR) / file.filename
     with dest.open("wb") as fh:
-        shutil.copyfileobj(file.file, fh)
+        fh.write(content)
 
     job = new_job(file.filename)
     job.push("queued", f"File received: {file.filename}")
