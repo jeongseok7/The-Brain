@@ -4,7 +4,7 @@ The Brain is a Retrieval-Augmented Generation (RAG) dashboard and 3D Knowledge G
 
 The system is built on top of the LightRAG and RAG-Anything frameworks. It supports fully offline execution via local models or cloud-based execution via any OpenAI-compatible API.
 
-<video src="./assets/the_brain_graph.mp4" autoplay loop muted playsinline width="100%"></video>
+<video src="https://github.com/Hastur-HP/The-Brain/raw/main/assets/the_brain_graph.mp4" autoplay loop muted playsinline width="100%"></video>
 ## Architecture
 
 * **Backend:** Python, FastAPI, Uvicorn, Server-Sent Events (SSE) for real-time log streaming.
