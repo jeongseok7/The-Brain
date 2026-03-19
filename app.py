@@ -18,7 +18,6 @@ GET  /                      - Web UI
 
 import os
 import re
-import uuid
 import json
 import shutil
 import asyncio
@@ -26,12 +25,8 @@ import logging
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
-from collections import deque
-from dataclasses import dataclass, field
 from typing import AsyncGenerator
 
-import numpy as np
-import httpx
 from fastapi import FastAPI, File, UploadFile, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -40,10 +35,15 @@ from pydantic import BaseModel
 from sentence_transformers import CrossEncoder
 from neo4j import AsyncGraphDatabase
 
+# LightRAG & RAG-Anything
 from lightrag import LightRAG
 from lightrag.utils import EmbeddingFunc
 from lightrag.llm.openai import openai_complete_if_cache
 from raganything import RAGAnything, RAGAnythingConfig
+
+# Local imports
+from backend.llm_providers import OllamaProvider, OpenAIProvider
+from backend.jobs import JobManager, JobLogHandler, Job
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -87,180 +87,14 @@ HIDDEN_TYPES_FILE = Path(WORKING_DIR) / "hidden_types.json"
 CONV_FILE = Path(WORKING_DIR) / "conversations.json"
 COMPLETED_LOG = Path(WORKING_DIR) / "completed_docs.json"
 
+# Document settings
 ALLOWED_EXTENSIONS = {".pdf", ".docx", ".doc", ".txt", ".md", ".pptx", ".xlsx"}
 MAX_UPLOAD_BYTES = 500 * 1024 * 1024  # 500 MB
 
-
-def _load_completed() -> dict:
-    """Load {filename: {chunks, nodes, relations, finished_at}} from disk."""
-    try:
-        if COMPLETED_LOG.exists():
-            return json.loads(COMPLETED_LOG.read_text())
-    except Exception:
-        pass
-    return {}
-
-
-def _save_completed(
-    filename: str, chunks: int, nodes: int, relations: int, finished_at: float
-):
-    """Append a successfully completed doc to the persistent log."""
-    try:
-        docs = _load_completed()
-        docs[filename] = {
-            "chunks": chunks,
-            "nodes": nodes,
-            "relations": relations,
-            "finished_at": finished_at,
-        }
-        COMPLETED_LOG.write_text(json.dumps(docs, indent=2))
-    except Exception as e:
-        logging.getLogger(__name__).warning(f"Could not save completed_docs.json: {e}")
-
-
 # ---------------------------------------------------------------------------
-# Job tracking
+# Instantiations
 # ---------------------------------------------------------------------------
-@dataclass
-class Job:
-    id: str
-    filename: str
-    status: str = "queued"
-    created_at: float = field(default_factory=time.time)
-    started_at: float = 0.0
-    finished_at: float = 0.0
-    events: deque = field(default_factory=lambda: deque(maxlen=500))
-    chunks: int = 0
-    nodes: int = 0
-    relations: int = 0
-    error: str = ""
-    block_types: dict = field(default_factory=dict)
-    multimodal_progress: int = 0
-    multimodal_total: int = 0
-
-    def push(self, kind: str, message: str, **extra):
-        event = {"kind": kind, "message": message, "ts": time.time(), **extra}
-        self.events.append(event)
-        if kind == "chunk":
-            self.chunks += 1
-        elif kind == "node":
-            self.nodes = extra.get("total", self.nodes)
-        elif kind == "relation":
-            self.relations = extra.get("total", self.relations)
-
-    def to_dict(self):
-        return {
-            "id": self.id,
-            "filename": self.filename,
-            "status": self.status,
-            "created_at": self.created_at,
-            "started_at": self.started_at,
-            "finished_at": self.finished_at,
-            "chunks": self.chunks,
-            "nodes": self.nodes,
-            "relations": self.relations,
-            "error": self.error,
-            "block_types": self.block_types,
-            "multimodal_progress": self.multimodal_progress,
-            "multimodal_total": self.multimodal_total,
-        }
-
-
-_jobs: dict[str, Job] = {}
-_jobs_order: deque = deque(maxlen=50)
-
-# Queue management
-_processing_queue: deque[tuple[Job, str]] = deque()
-_queue_paused: bool = False
-_current_job: Job | None = None
-
-
-def new_job(filename: str) -> Job:
-    job = Job(id=str(uuid.uuid4()), filename=filename)
-    _jobs[job.id] = job
-    _jobs_order.append(job.id)
-    live_ids = set(_jobs_order)
-    for jid in list(_jobs.keys()):
-        if jid not in live_ids:
-            del _jobs[jid]
-    return job
-
-
-# ---------------------------------------------------------------------------
-# Log handler
-# ---------------------------------------------------------------------------
-class JobLogHandler(logging.Handler):
-    _CHUNK_PATTERNS = ("processing chunk", "chunk ", "inserting chunk", "split into")
-    _NODE_PATTERNS = ("entit", "extract")
-    _EDGE_PATTERNS = ("upsert_chunk",)
-    _DONE_PATTERNS = ("completed merging",)
-
-    _BLOCK_TYPE_HEADER = "content block types:"
-    _BLOCK_TYPE_LINE = re.compile(r"\s*-\s*(\w+):\s*(\d+)")
-    _MULTIMODAL_RE = re.compile(
-        r"multimodal chunk generation progress:\s*(\d+)/(\d+)", re.IGNORECASE
-    )
-
-    def __init__(self, job: Job):
-        super().__init__()
-        self.job = job
-        self._in_block_types = False
-
-    def emit(self, record: logging.LogRecord):
-        msg = record.getMessage()
-        msg_lower = msg.lower()
-        try:
-            if self._BLOCK_TYPE_HEADER in msg_lower:
-                self._in_block_types = True
-                self.job.push("log", msg)
-                return
-
-            if self._in_block_types:
-                m = self._BLOCK_TYPE_LINE.search(msg)
-                if m:
-                    btype, count = m.group(1), int(m.group(2))
-                    self.job.block_types[btype] = count
-                    self.job.push("block_type", msg, btype=btype, count=count)
-                    return
-                else:
-                    self._in_block_types = False
-
-            m = self._MULTIMODAL_RE.search(msg)
-            if m:
-                self.job.multimodal_progress = int(m.group(1))
-                self.job.multimodal_total = int(m.group(2))
-                self.job.push(
-                    "multimodal_progress",
-                    msg,
-                    current=self.job.multimodal_progress,
-                    total=self.job.multimodal_total,
-                )
-                return
-
-            if any(p in msg_lower for p in self._DONE_PATTERNS):
-                nums = re.findall(r"\d+", msg)
-                if len(nums) >= 3:
-                    self.job.nodes = int(nums[0]) + int(nums[1])
-                    self.job.relations = int(nums[2])
-                    self.job.push("node", msg, total=self.job.nodes)
-                    self.job.push("relation", msg, total=self.job.relations)
-                return
-
-            if any(p in msg_lower for p in self._CHUNK_PATTERNS):
-                self.job.push("chunk", msg)
-            elif any(p in msg_lower for p in self._NODE_PATTERNS):
-                nums = re.findall(r"\d+", msg)
-                total = int(nums[-1]) if nums else self.job.nodes
-                self.job.push("node", msg, total=total)
-            elif any(p in msg_lower for p in self._EDGE_PATTERNS):
-                nums = re.findall(r"\d+", msg)
-                total = int(nums[-1]) if nums else self.job.relations
-                self.job.push("relation", msg, total=total)
-            else:
-                self.job.push("log", msg)
-        except Exception:
-            pass
-
+job_manager = JobManager(WORKING_DIR)
 
 # ---------------------------------------------------------------------------
 # Reranker (BGE, CPU, loaded once at startup)
@@ -293,167 +127,6 @@ async def rerank_func(query: str, documents: list[str], top_n: int = 20):
 
 
 # ---------------------------------------------------------------------------
-# Ollama helpers
-# ---------------------------------------------------------------------------
-async def ollama_llm(prompt, system_prompt=None, history_messages=None, **kwargs):
-    history_messages = history_messages or []
-    messages = []
-    if system_prompt:
-        messages.append({"role": "system", "content": system_prompt})
-    for m in history_messages:
-        messages.append(m)
-    messages.append({"role": "user", "content": prompt})
-    async with httpx.AsyncClient(timeout=LLM_TIMEOUT) as client:
-        resp = await client.post(
-            f"{OLLAMA_BASE_URL}/api/chat",
-            json={
-                "model": LLM_MODEL,
-                "messages": messages,
-                "stream": False,
-                "options": {"num_ctx": LLM_NUM_CTX},
-            },
-        )
-        resp.raise_for_status()
-        return resp.json()["message"]["content"]
-
-
-async def ollama_vision(
-    prompt,
-    system_prompt=None,
-    history_messages=None,
-    image_data=None,
-    messages=None,
-    **kwargs,
-):
-    if not VISION_MODEL:
-        return await ollama_llm(prompt, system_prompt, history_messages, **kwargs)
-
-    if messages:
-        async with httpx.AsyncClient(timeout=LLM_TIMEOUT) as client:
-            resp = await client.post(
-                f"{OLLAMA_BASE_URL}/v1/chat/completions",
-                json={"model": VISION_MODEL, "messages": messages, "stream": False},
-            )
-            resp.raise_for_status()
-            return resp.json()["choices"][0]["message"]["content"]
-
-    if image_data:
-        built = []
-        if system_prompt:
-            built.append({"role": "system", "content": system_prompt})
-        built.append({"role": "user", "content": prompt, "images": [image_data]})
-        async with httpx.AsyncClient(timeout=LLM_TIMEOUT) as client:
-            resp = await client.post(
-                f"{OLLAMA_BASE_URL}/api/chat",
-                json={
-                    "model": VISION_MODEL,
-                    "messages": built,
-                    "stream": False,
-                    "format": "json",
-                },
-            )
-            resp.raise_for_status()
-            return resp.json()["message"]["content"]
-
-    return await ollama_llm(prompt, system_prompt, history_messages, **kwargs)
-
-
-async def ollama_embed(texts: list[str]) -> np.ndarray:
-    async with httpx.AsyncClient(timeout=EMBEDDING_TIMEOUT) as client:
-        resp = await client.post(
-            f"{OLLAMA_BASE_URL}/api/embed",
-            json={"model": EMBEDDING_MODEL, "input": texts},
-        )
-        resp.raise_for_status()
-        return np.array(resp.json()["embeddings"])
-
-
-# ---------------------------------------------------------------------------
-# External API (OpenAI-compatible) helpers
-# ---------------------------------------------------------------------------
-async def external_llm(prompt, system_prompt=None, history_messages=None, **kwargs):
-    return await openai_complete_if_cache(
-        LLM_MODEL,
-        prompt,
-        system_prompt=system_prompt,
-        history_messages=history_messages or [],
-        api_key=OPENAI_API_KEY,
-        base_url=OPENAI_BASE_URL,
-        **kwargs,
-    )
-
-
-async def external_vision(
-    prompt,
-    system_prompt=None,
-    history_messages=None,
-    image_data=None,
-    messages=None,
-    **kwargs,
-):
-    if not VISION_MODEL:
-        return await external_llm(prompt, system_prompt, history_messages, **kwargs)
-
-    # Handle native Multimodal Query format
-    if messages:
-        return await openai_complete_if_cache(
-            VISION_MODEL,
-            "",
-            system_prompt=None,
-            history_messages=[],
-            messages=messages,
-            api_key=OPENAI_API_KEY,
-            base_url=OPENAI_BASE_URL,
-            **kwargs,
-        )
-
-    # Handle standard image processing
-    if image_data:
-        built = []
-        if system_prompt:
-            built.append({"role": "system", "content": system_prompt})
-        built.append(
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt},
-                    {
-                        "type": "image_url",
-                        "image_url": {"url": f"data:image/jpeg;base64,{image_data}"},
-                    },
-                ],
-            }
-        )
-        return await openai_complete_if_cache(
-            VISION_MODEL,
-            "",
-            system_prompt=None,
-            history_messages=[],
-            messages=built,
-            api_key=OPENAI_API_KEY,
-            base_url=OPENAI_BASE_URL,
-            **kwargs,
-        )
-
-    return await external_llm(prompt, system_prompt, history_messages, **kwargs)
-
-
-async def external_embed(texts: list[str]) -> np.ndarray:
-    headers = {
-        "Authorization": f"Bearer {OPENAI_API_KEY}",
-        "Content-Type": "application/json",
-    }
-    async with httpx.AsyncClient(timeout=EMBEDDING_TIMEOUT) as client:
-        resp = await client.post(
-            f"{OPENAI_BASE_URL.rstrip('/')}/embeddings",
-            headers=headers,
-            json={"model": EMBEDDING_MODEL, "input": texts},
-        )
-        resp.raise_for_status()
-        return np.array([item["embedding"] for item in resp.json()["data"]])
-
-
-# ---------------------------------------------------------------------------
 # App lifespan
 # ---------------------------------------------------------------------------
 rag: RAGAnything | None = None
@@ -462,11 +135,11 @@ _neo4j_driver = None
 
 
 async def _queue_worker():
-    """Processes documents. Respects _queue_paused flag."""
+    """Processes documents. Respects queue_paused flag."""
     global _current_job
     while True:
-        if not _queue_paused and _processing_queue:
-            job, file_path = _processing_queue.popleft()
+        if not job_manager.queue_paused and job_manager.processing_queue:
+            job, file_path = job_manager.processing_queue.popleft()
             _current_job = job
             await _process_document(job, file_path)
             _current_job = None
@@ -508,26 +181,36 @@ async def lifespan(app: FastAPI):
     # === AUTO-SWITCH LOGIC ===
     if OPENAI_API_KEY:
         _base_logger.info("OPENAI_API_KEY detected. Routing LLM to External API.")
-        active_llm = external_llm
-        active_vision = external_vision if VISION_MODEL else None
-        active_embed = external_embed
+        provider = OpenAIProvider(
+            api_key=OPENAI_API_KEY,
+            base_url=OPENAI_BASE_URL,
+            llm_model=LLM_MODEL,
+            vision_model=VISION_MODEL,
+            embed_model=EMBEDDING_MODEL,
+            timeout=LLM_TIMEOUT,
+        )
     else:
         _base_logger.info("No OPENAI_API_KEY detected. Routing LLM to local Ollama.")
-        active_llm = ollama_llm
-        active_vision = ollama_vision if VISION_MODEL else None
-        active_embed = ollama_embed
+        provider = OllamaProvider(
+            base_url=OLLAMA_BASE_URL,
+            llm_model=LLM_MODEL,
+            vision_model=VISION_MODEL,
+            embed_model=EMBEDDING_MODEL,
+            num_ctx=LLM_NUM_CTX,
+            timeout=LLM_TIMEOUT,
+        )
 
     lightrag_instance = LightRAG(
         working_dir=WORKING_DIR,
         graph_storage="Neo4JStorage",
-        llm_model_func=active_llm,
+        llm_model_func=provider.llm,
         llm_model_max_async=LLM_MAX_ASYNC,
         chunk_token_size=CHUNK_SIZE,
         chunk_overlap_token_size=CHUNK_OVERLAP,
         embedding_func=EmbeddingFunc(
             embedding_dim=EMBEDDING_DIM,
             max_token_size=MAX_EMBED_TOKENS,
-            func=active_embed,
+            func=provider.embed,
         ),
         embedding_func_max_async=EMBEDDING_MAX_ASYNC,
         rerank_model_func=rerank_func,
@@ -537,12 +220,12 @@ async def lifespan(app: FastAPI):
     rag = RAGAnything(
         config=config,
         lightrag=lightrag_instance,
-        llm_model_func=active_llm,
-        vision_model_func=active_vision,
+        llm_model_func=provider.llm,
+        vision_model_func=provider.vision if VISION_MODEL else None,
         embedding_func=EmbeddingFunc(
             embedding_dim=EMBEDDING_DIM,
             max_token_size=MAX_EMBED_TOKENS,
-            func=active_embed,
+            func=provider.embed,
         ),
     )
 
@@ -638,7 +321,7 @@ async def _process_document(job: Job, file_path: str):
             nodes=job.nodes,
             relations=job.relations,
         )
-        _save_completed(
+        job_manager.save_completed(
             job.filename, job.chunks, job.nodes, job.relations, job.finished_at
         )
 
@@ -668,7 +351,11 @@ def health():
 
 @app.get("/stats")
 async def get_stats():
-    jobs = [_jobs[jid] for jid in _jobs_order if jid in _jobs]
+    jobs = [
+        job_manager.jobs[jid]
+        for jid in job_manager.jobs_order
+        if jid in job_manager.jobs
+    ]
     failed = [j for j in jobs if j.status == "error"]
     active = [j for j in jobs if j.status in ("parsing", "processing")]
 
@@ -684,7 +371,7 @@ async def get_stats():
         _base_logger.warning(f"Neo4j stats query failed: {e}")
 
     # Count processed from persistent log — survives restarts
-    completed = _load_completed()
+    completed = job_manager.load_completed()
     processed_count = len(completed)
 
     return {
@@ -692,10 +379,10 @@ async def get_stats():
         "processed": processed_count,
         "failed": len(failed),
         "active": len(active),
-        "queued": len(_processing_queue),
+        "queued": len(job_manager.processing_queue),
         "total_nodes": total_nodes,
         "total_relations": total_relations,
-        "queue_paused": _queue_paused,
+        "queue_paused": job_manager.queue_paused,
         "current_job": _current_job.to_dict() if _current_job else None,
     }
 
@@ -722,7 +409,7 @@ async def save_hidden_types(types: list[str]):
 @app.get("/processed-filenames")
 def processed_filenames():
     """Returns filenames that completed successfully — survives restarts."""
-    return list(_load_completed().keys())
+    return list(job_manager.load_completed().keys())
 
 
 @app.get("/graph")
@@ -823,7 +510,11 @@ async def get_graph(limit: int = 300, search: str = ""):
 
 @app.get("/jobs")
 def list_jobs():
-    return [_jobs[jid].to_dict() for jid in reversed(list(_jobs_order)) if jid in _jobs]
+    return [
+        job_manager.jobs[jid].to_dict()
+        for jid in reversed(list(job_manager.jobs_order))
+        if jid in job_manager.jobs
+    ]
 
 
 @app.get("/uploads")
@@ -852,15 +543,13 @@ def delete_upload(filename: str):
 
 @app.post("/queue/pause")
 def pause_queue():
-    global _queue_paused
-    _queue_paused = True
+    job_manager.queue_paused = True
     return {"paused": True}
 
 
 @app.post("/queue/resume")
 def resume_queue():
-    global _queue_paused
-    _queue_paused = False
+    job_manager.queue_paused = False
     return {"paused": False}
 
 
@@ -885,25 +574,25 @@ async def upload_document(file: UploadFile = File(...)):
     with dest.open("wb") as fh:
         fh.write(content)
 
-    job = new_job(file.filename)
+    job = job_manager.new_job(file.filename)
     job.push("queued", f"File received: {file.filename}")
-    _processing_queue.append((job, str(dest)))
+    job_manager.processing_queue.append((job, str(dest)))
 
     return {
         "job_id": job.id,
         "filename": file.filename,
-        "queue_position": len(_processing_queue),
+        "queue_position": len(job_manager.processing_queue),
     }
 
 
 @app.get("/progress/{job_id}")
 async def progress_stream(job_id: str, from_index: int = 0):
     """SSE stream. ?from_index=N resumes without replaying already-seen events."""
-    if job_id not in _jobs:
+    if job_id not in job_manager.jobs:
         raise HTTPException(status_code=404, detail="Job not found")
 
     async def generate() -> AsyncGenerator[str, None]:
-        job = _jobs[job_id]
+        job = job_manager.jobs[job_id]
         sent = from_index
         idle = 0
         while True:
