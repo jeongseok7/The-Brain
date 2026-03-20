@@ -32,8 +32,6 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel
-from sentence_transformers import CrossEncoder
-from neo4j import AsyncGraphDatabase
 
 # LightRAG & RAG-Anything
 from lightrag import LightRAG
@@ -44,115 +42,39 @@ from raganything import RAGAnything, RAGAnythingConfig
 # Local imports
 from backend.llm_providers import OllamaProvider, OpenAIProvider
 from backend.jobs import JobManager, JobLogHandler, Job
-
-# ---------------------------------------------------------------------------
-# Configuration
-# ---------------------------------------------------------------------------
-
-# Fallback local Ollama
-OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-
-# External API (OpenAI, DeepSeek, Groq, etc.)
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
-
-# Model names
-LLM_MODEL = os.getenv("LLM_MODEL", "qwen3.5:9b")
-VISION_MODEL = os.getenv("VISION_MODEL", "qwen2.5vl:latest")
-EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "qwen3-embedding:8b")
-
-# Model settings
-CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "600"))
-CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP_SIZE", "100"))
-LLM_NUM_CTX = int(os.getenv("LLM_NUM_CTX", "32768"))
-LLM_TIMEOUT = int(os.getenv("LLM_TIMEOUT", "7200"))
-LLM_MAX_ASYNC = int(os.getenv("LLM_MAX_ASYNC", "1"))
-EMBEDDING_TIMEOUT = int(os.getenv("EMBEDDING_TIMEOUT", "300"))
-EMBEDDING_MAX_ASYNC = int(os.getenv("EMBEDDING_MAX_ASYNC", "1"))
-EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM", "4096"))
-MAX_EMBED_TOKENS = int(os.getenv("MAX_EMBED_TOKENS", "8192"))
-
-# Neo4j
-NEO4J_URI = os.getenv("NEO4J_URI", "bolt://localhost:7687")
-NEO4J_USERNAME = os.getenv("NEO4J_USERNAME", "neo4j")
-NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "")
-NEO4J_DATABASE = os.getenv("NEO4J_DATABASE", "neo4j")
-
-# Filestructure
-WORKING_DIR = os.getenv("WORKING_DIR", "/app/rag_storage")
-UPLOAD_DIR = os.getenv("UPLOAD_DIR", "/app/uploads")
-OUTPUT_DIR = os.getenv("OUTPUT_DIR", "/app/output")
-PARSER = os.getenv("PARSER", "mineru")
-HIDDEN_TYPES_FILE = Path(WORKING_DIR) / "hidden_types.json"
-CONV_FILE = Path(WORKING_DIR) / "conversations.json"
-COMPLETED_LOG = Path(WORKING_DIR) / "completed_docs.json"
-
-# Document settings
-ALLOWED_EXTENSIONS = {".pdf", ".docx", ".doc", ".txt", ".md", ".pptx", ".xlsx"}
-MAX_UPLOAD_BYTES = 500 * 1024 * 1024  # 500 MB
-
-# ---------------------------------------------------------------------------
-# Instantiations
-# ---------------------------------------------------------------------------
-job_manager = JobManager(WORKING_DIR)
-
-# ---------------------------------------------------------------------------
-# Reranker (BGE, CPU, loaded once at startup)
-# ---------------------------------------------------------------------------
-_reranker: CrossEncoder | None = None
-
-
-def get_reranker() -> CrossEncoder:
-    global _reranker
-    if _reranker is None:
-        _base_logger.info("Loading reranker BAAI/bge-reranker-v2-m3 ...")
-        _reranker = CrossEncoder("BAAI/bge-reranker-v2-m3")
-        _base_logger.info("Reranker ready.")
-    return _reranker
-
-
-async def rerank_func(query: str, documents: list[str], top_n: int = 20):
-    loop = asyncio.get_running_loop()
-    pairs = [[query, doc] for doc in documents]
-    scores = await loop.run_in_executor(
-        None, lambda: get_reranker().predict(pairs, show_progress_bar=True)
-    )
-    results = [{"index": i, "relevance_score": float(s)} for i, s in enumerate(scores)]
-    results.sort(key=lambda x: x["relevance_score"], reverse=True)
-    _base_logger.info(
-        f"[rerank] {len(documents)} docs → top: "
-        f"{[round(r['relevance_score'], 3) for r in results[:5]]}"
-    )
-    return results
+from backend.neo4j_utils import Neo4jManager
+from backend.reranker import DocumentReranker
+from backend.config import *
+from backend.dependencies import (
+    job_manager,
+    neo4j_manager,
+    document_reranker,
+    state,
+    base_logger,
+)
 
 
 # ---------------------------------------------------------------------------
 # App lifespan
 # ---------------------------------------------------------------------------
-rag: RAGAnything | None = None
-_base_logger = logging.getLogger("uvicorn.error")
-_neo4j_driver = None
 
 
 async def _queue_worker():
     """Processes documents. Respects queue_paused flag."""
-    global _current_job
     while True:
         if not job_manager.queue_paused and job_manager.processing_queue:
             job, file_path = job_manager.processing_queue.popleft()
-            _current_job = job
+            job_manager.current_job = job
             await _process_document(job, file_path)
-            _current_job = None
+            job_manager.current_job = None
         await asyncio.sleep(0.5)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global rag
-    global _neo4j_driver
     logging.basicConfig(level=logging.INFO)
     logging.getLogger().setLevel(logging.INFO)
-    _base_logger.info("Initialising RAGAnything …")
+    base_logger.info("Initialising RAGAnything …")
 
     for d in (WORKING_DIR, UPLOAD_DIR, OUTPUT_DIR):
         Path(d).mkdir(parents=True, exist_ok=True)
@@ -180,7 +102,7 @@ async def lifespan(app: FastAPI):
 
     # === AUTO-SWITCH LOGIC ===
     if OPENAI_API_KEY:
-        _base_logger.info("OPENAI_API_KEY detected. Routing LLM to External API.")
+        base_logger.info("OPENAI_API_KEY detected. Routing LLM to External API.")
         provider = OpenAIProvider(
             api_key=OPENAI_API_KEY,
             base_url=OPENAI_BASE_URL,
@@ -190,7 +112,7 @@ async def lifespan(app: FastAPI):
             timeout=LLM_TIMEOUT,
         )
     else:
-        _base_logger.info("No OPENAI_API_KEY detected. Routing LLM to local Ollama.")
+        base_logger.info("No OPENAI_API_KEY detected. Routing LLM to local Ollama.")
         provider = OllamaProvider(
             base_url=OLLAMA_BASE_URL,
             llm_model=LLM_MODEL,
@@ -213,11 +135,11 @@ async def lifespan(app: FastAPI):
             func=provider.embed,
         ),
         embedding_func_max_async=EMBEDDING_MAX_ASYNC,
-        rerank_model_func=rerank_func,
+        rerank_model_func=document_reranker.rerank,
     )
     await lightrag_instance.initialize_storages()
 
-    rag = RAGAnything(
+    state.rag = RAGAnything(
         config=config,
         lightrag=lightrag_instance,
         llm_model_func=provider.llm,
@@ -229,16 +151,14 @@ async def lifespan(app: FastAPI):
         ),
     )
 
-    _base_logger.info("Preloading reranker...")
-    get_reranker()
-    _base_logger.info("Starting queue worker...")
+    base_logger.info("Preloading reranker...")
+    document_reranker.load()
+    base_logger.info("Starting queue worker...")
     asyncio.create_task(_queue_worker())
-    _base_logger.info("RAGAnything ready.")
-    _neo4j_driver = AsyncGraphDatabase.driver(
-        NEO4J_URI, auth=(NEO4J_USERNAME, NEO4J_PASSWORD)
-    )
+    base_logger.info("RAGAnything ready.")
+    neo4j_manager.connect()
     yield
-    await _neo4j_driver.close()
+    await neo4j_manager.close()
 
 
 # ---------------------------------------------------------------------------
@@ -275,7 +195,7 @@ app = _app
 # Background processing
 # ---------------------------------------------------------------------------
 async def _process_document(job: Job, file_path: str):
-    if rag is None:
+    if state.rag is None:
         job.status = "error"
         job.push("error", "RAGAnything not initialised")
         return
@@ -304,7 +224,7 @@ async def _process_document(job: Job, file_path: str):
                 shutil.rmtree(stale)
                 job.push("log", f"Cleared stale output directory: {stale.name}")
 
-        await rag.process_document_complete(
+        await state.rag.process_document_complete(
             file_path=file_path,
             output_dir=OUTPUT_DIR,
             parse_method="auto",
@@ -330,7 +250,7 @@ async def _process_document(job: Job, file_path: str):
         job.finished_at = time.time()
         job.error = str(exc)
         job.push("error", f"✗ {exc}")
-        _base_logger.exception("Processing failed for %s", job.filename)
+        base_logger.exception("Processing failed for %s", job.filename)
     finally:
         for name in watched_loggers:
             logging.getLogger(name).removeHandler(handler)
@@ -360,15 +280,7 @@ async def get_stats():
     active = [j for j in jobs if j.status in ("parsing", "processing")]
 
     # Always query Neo4j directly — correct even after restarts
-    total_nodes = total_relations = 0
-    try:
-        async with _neo4j_driver.session(database=NEO4J_DATABASE) as session:
-            r1 = await session.run("MATCH (n) RETURN count(n) AS c")
-            total_nodes = (await r1.single())["c"]
-            r2 = await session.run("MATCH ()-[r]->() RETURN count(r) AS c")
-            total_relations = (await r2.single())["c"]
-    except Exception as e:
-        _base_logger.warning(f"Neo4j stats query failed: {e}")
+    total_nodes, total_relations = await neo4j_manager.get_stats()
 
     # Count processed from persistent log — survives restarts
     completed = job_manager.load_completed()
@@ -383,7 +295,9 @@ async def get_stats():
         "total_nodes": total_nodes,
         "total_relations": total_relations,
         "queue_paused": job_manager.queue_paused,
-        "current_job": _current_job.to_dict() if _current_job else None,
+        "current_job": job_manager.current_job.to_dict()
+        if job_manager.current_job
+        else None,
     }
 
 
@@ -420,101 +334,14 @@ async def get_graph(limit: int = 300, search: str = ""):
     - With search: 2-hop neighborhood around matching nodes
     """
     try:
-        async with _neo4j_driver.session(database=NEO4J_DATABASE) as session:
-            if search.strip():
-                # Neighborhood search — find matching nodes then expand 2 hops
-                cypher = """
-                        MATCH (n)
-                        WHERE toLower(n.entity_id) CONTAINS toLower($search)
-                           OR toLower(coalesce(n.description,'')) CONTAINS toLower($search)
-                        WITH n LIMIT 5
-                        MATCH path = (n)-[r*0..2]-(neighbor)
-                        WITH collect(DISTINCT startNode(relationships(path)[0])) +
-                             collect(DISTINCT endNode(relationships(path)[0])) +
-                             collect(DISTINCT n) AS allNodes,
-                             collect(DISTINCT r) AS allRels
-                        UNWIND allNodes AS node
-                        WITH collect(DISTINCT node)[..200] AS topNodes
-                        MATCH (a)-[r]->(b)
-                        WHERE a IN topNodes AND b IN topNodes
-                        RETURN
-                          a.entity_id AS src, a.entity_type AS src_type,
-                          coalesce(a.description,'') AS src_desc,
-                          b.entity_id AS tgt, b.entity_type AS tgt_type,
-                          coalesce(b.description,'') AS tgt_desc,
-                          coalesce(r.description, type(r)) AS rel_label,
-                          coalesce(r.weight, 1.0) AS weight
-                        LIMIT 2000
-                    """
-                result = await session.run(cypher, search=search.strip())
-            else:
-                # Top N nodes by degree, then edges between them
-                cypher = """
-                        MATCH (n)
-                        WITH n, size([(n)--() | 1]) AS degree
-                        ORDER BY degree DESC
-                        LIMIT $limit
-                        WITH collect(n) AS topNodes
-                        MATCH (a)-[r]->(b)
-                        WHERE a IN topNodes AND b IN topNodes
-                        RETURN
-                          a.entity_id AS src, a.entity_type AS src_type,
-                          coalesce(a.description,'') AS src_desc,
-                          b.entity_id AS tgt, b.entity_type AS tgt_type,
-                          coalesce(b.description,'') AS tgt_desc,
-                          coalesce(r.description, type(r)) AS rel_label,
-                          coalesce(r.weight, 1.0) AS weight
-                        LIMIT 3000
-                    """
-                result = await session.run(cypher, limit=limit)
-
-            nodes: dict[str, dict] = {}
-            links: list[dict] = []
-
-            async for row in result:
-                src, tgt = row["src"], row["tgt"]
-                if not src or not tgt:
-                    continue
-
-                if src not in nodes:
-                    nodes[src] = {
-                        "id": src,
-                        "type": (row["src_type"] or "unknown").lower(),
-                        "desc": row["src_desc"][:200] if row["src_desc"] else "",
-                        "degree": 0,
-                    }
-                if tgt not in nodes:
-                    nodes[tgt] = {
-                        "id": tgt,
-                        "type": (row["tgt_type"] or "unknown").lower(),
-                        "desc": row["tgt_desc"][:200] if row["tgt_desc"] else "",
-                        "degree": 0,
-                    }
-
-                nodes[src]["degree"] += 1
-                nodes[tgt]["degree"] += 1
-                links.append(
-                    {
-                        "source": src,
-                        "target": tgt,
-                        "label": (row["rel_label"] or "")[:80],
-                        "weight": float(row["weight"] or 1.0),
-                    }
-                )
-
-            return {"nodes": list(nodes.values()), "links": links}
-
+        return await neo4j_manager.get_graph(limit, search)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/jobs")
 def list_jobs():
-    return [
-        job_manager.jobs[jid].to_dict()
-        for jid in reversed(list(job_manager.jobs_order))
-        if jid in job_manager.jobs
-    ]
+    return job_manager.get_all_jobs_dict()
 
 
 @app.get("/uploads")
@@ -555,7 +382,7 @@ def resume_queue():
 
 @app.post("/upload")
 async def upload_document(file: UploadFile = File(...)):
-    if rag is None:
+    if state.rag is None:
         raise HTTPException(status_code=503, detail="RAGAnything not initialised yet")
     if not file.filename:
         raise HTTPException(status_code=400, detail="File must have a filename")
@@ -649,37 +476,9 @@ class QueryLogCapture(logging.Handler):
             self.entity_names = [e.strip() for e in raw.split(",") if e.strip()]
 
 
-async def _resolve_node_ids(entity_names: list[str]) -> list[str]:
-    """Look up entity_ids in Neo4j that match the captured entity names."""
-    if not entity_names:
-        return []
-    try:
-        async with _neo4j_driver.session(database=NEO4J_DATABASE) as session:
-            # Match by exact entity_id or case-insensitive partial match
-            result = await session.run(
-                """
-                    UNWIND $names AS name
-                    MATCH (n)
-                    WHERE toLower(n.entity_id) = toLower(name)
-                       OR toLower(n.entity_id) CONTAINS toLower(name)
-                    RETURN DISTINCT n.entity_id AS eid
-                    LIMIT 60
-                    """,
-                names=entity_names,
-            )
-            ids = []
-            async for row in result:
-                if row["eid"]:
-                    ids.append(row["eid"])
-            return ids
-    except Exception as e:
-        _base_logger.warning(f"Node ID resolution failed: {e}")
-        return []
-
-
 @app.post("/query")
 async def query(req: QueryRequest):
-    if rag is None:
+    if state.rag is None:
         raise HTTPException(status_code=503, detail="RAGAnything not initialised yet")
 
     # Attach log capture handler if caller wants highlighted nodes
@@ -689,7 +488,7 @@ async def query(req: QueryRequest):
             logging.getLogger(name).addHandler(capture)
 
     try:
-        answer = await rag.aquery(req.question, mode=req.mode, vlm_enhanced=False)
+        answer = await state.rag.aquery(req.question, mode=req.mode, vlm_enhanced=False)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
     finally:
@@ -708,7 +507,9 @@ async def query(req: QueryRequest):
     }
 
     if req.return_nodes and capture:
-        result["highlighted_nodes"] = await _resolve_node_ids(capture.entity_names)
+        result["highlighted_nodes"] = await neo4j_manager.resolve_node_ids(
+            capture.entity_names
+        )
 
     return result
 
@@ -733,7 +534,7 @@ async def save_conversations(request: Request):
             json.dump(convs, f)
         return {"status": "ok"}
     except Exception as e:
-        _base_logger.error(f"Failed to save conversations: {e}")
+        base_logger.error(f"Failed to save conversations: {e}")
         return {"status": "error", "detail": str(e)}
 
 
