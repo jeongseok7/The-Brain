@@ -5,17 +5,29 @@ services:
     restart: unless-stopped
     network_mode: "host"
     environment:
-      # Local Connection
-      - OLLAMA_BASE_URL=http://localhost:11434
+      # Active engine provider
+      # Options: ollama, openai, vllm, lmstudio, llamacpp
+      - LLM_ENGINE=llamacpp
 
-      # External Connection (uncomment to use)
-      #- OPENAI_API_KEY=
-      #- OPENAI_BASE_URL=
+      # Provider URLs
+      - OLLAMA_BASE_URL=http://localhost:11434
+      - LM_STUDIO_BASE_URL=http://localhost:1234/v1
+      - VLLM_BASE_URL=http://localhost:8000/v1
+      - LLAMA_CPP_BASE_URL=http://localhost:8080/v1
+      - OPENAI_BASE_URL=https://api.openai.com/v1
+
+      # API key
+      - OPENAI_API_KEY=sk-local-test-key
 
       # Models
       - LLM_MODEL=qwen3.5:9b
       - EMBEDDING_MODEL=qwen3-embedding:8b
       - VISION_MODEL=qwen2.5vl:latest
+
+      # Reranker config
+      # If not set, the default model inside container will be used
+      #- RERANKER_BASE_URL=
+      #- RERANKER_MODEL=
 
       # Model Settings & Tuning
       - LLM_NUM_CTX=32768
