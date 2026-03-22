@@ -1,0 +1,12 @@
+# Ignore local test data 
+data/
+
+# Ignore Python compiled bytecode (this is what that new folder is)
+**/__pycache__/
+*.pyc
+
+# Ignore local models/caches
+.cache/
+
+# Ignore .env
+.env

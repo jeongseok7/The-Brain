@@ -1,0 +1,17 @@
+# Ignore local test data and database files
+data/
+
+# Ignore Python cache files
+**/__pycache__/
+*.pyc
+
+# Ignore Git history
+.git/
+.gitignore
+
+# Ignore local virtual environments (if you use one)
+venv/
+env/
+
+# Ignore local model caches
+.cache/
