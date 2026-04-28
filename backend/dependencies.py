@@ -10,7 +10,7 @@ from backend.config import (
     NEO4J_DATABASE,
     RERANKER_MODEL,
     RERANKER_BASE_URL,
-    OPENAI_API_KEY,
+    RERANKER_API_KEY,
     LLM_TIMEOUT,
 )
 
@@ -30,7 +30,7 @@ neo4j_manager = Neo4jManager(
 document_reranker = DocumentReranker(
     model_name=RERANKER_MODEL,
     base_url=RERANKER_BASE_URL,
-    api_key=OPENAI_API_KEY,
+    api_key=RERANKER_API_KEY,
     timeout=LLM_TIMEOUT,
 )
 

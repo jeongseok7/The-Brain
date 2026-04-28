@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "the-brain"
+version = "0.1.0"
+description = "The Brain - Personal Knowledge Graph powered by RAGAnything + LightRAG"
+requires-python = ">=3.11"
+
+[tool.uv]
+dev-dependencies = [
+    "pytest>=6.0",
+    "pytest-asyncio",
+    "black",
+    "isort",
+    "ruff",
+    "mypy",
+    "python-dotenv",
+    "httpx",
+]
+
+[tool.ruff]
+target-version = "py311"
+
+[tool.ruff.lint]
+ignore = ["E402"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test*.py"]
+asyncio_mode = "auto"

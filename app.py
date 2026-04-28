@@ -216,8 +216,6 @@ async def lifespan(app: FastAPI):
         ),
     )
 
-    base_logger.info("Preloading reranker...")
-    document_reranker.load()
     base_logger.info("Starting queue worker...")
     asyncio.create_task(_queue_worker())
     base_logger.info("RAGAnything ready.")

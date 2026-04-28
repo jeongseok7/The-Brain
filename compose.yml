@@ -3,57 +3,60 @@ services:
     image: ghcr.io/hastur-hp/the-brain:latest
     container_name: the_brain
     restart: unless-stopped
-    network_mode: "host"
+    ports:
+      - "${APP_PORT:-8100}:8100"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       # Active engine provider
       # Options: ollama, openai, vllm, lmstudio, llamacpp
-      - LLM_ENGINE=llamacpp
+      - LLM_ENGINE=${LLM_ENGINE:-lmstudio}
 
-      # Provider URLs
-      - OLLAMA_BASE_URL=http://localhost:11434
-      - LM_STUDIO_BASE_URL=http://localhost:1234/v1
-      - VLLM_BASE_URL=http://localhost:8000/v1
-      - LLAMA_CPP_BASE_URL=http://localhost:8080/v1
-      - OPENAI_BASE_URL=https://api.openai.com/v1
+      # Provider URLs (host.docker.internal reaches the Mac host from inside the container)
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      - LM_STUDIO_BASE_URL=${LM_STUDIO_BASE_URL:-http://host.docker.internal:1234/v1}
+      - VLLM_BASE_URL=${VLLM_BASE_URL:-http://localhost:8000/v1}
+      - LLAMA_CPP_BASE_URL=${LLAMA_CPP_BASE_URL:-http://localhost:8080/v1}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL:-https://api.openai.com/v1}
 
       # API key
-      - OPENAI_API_KEY=sk-local-test-key
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-sk-no-key-required}
 
       # Models
-      - LLM_MODEL=qwen3.5:9b
-      - EMBEDDING_MODEL=qwen3-embedding:8b
-      - VISION_MODEL=qwen2.5vl:latest
+      - LLM_MODEL=${LLM_MODEL:-gemma-4-26b-a4b-it-mlx}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-text-embedding-qwen3-embedding-0.6b}
+      - VISION_MODEL=${VISION_MODEL:-gemma-4-26b-a4b-it-mlx}
 
       # Reranker config
-      # If not set, the default model inside container will be used
-      #- RERANKER_BASE_URL=
-      #- RERANKER_MODEL=
+      - RERANKER_BASE_URL=${RERANKER_BASE_URL:-https://api.cohere.com/v2}
+      - RERANKER_MODEL=${RERANKER_MODEL:-rerank-v4.0-fast}
+      - RERANKER_API_KEY=${RERANKER_API_KEY:-}
 
       # Model Settings & Tuning
-      - LLM_NUM_CTX=32768
-      - LLM_TIMEOUT=7200
-      - LLM_MAX_ASYNC=1
+      - LLM_NUM_CTX=${LLM_NUM_CTX:-32768}
+      - LLM_TIMEOUT=${LLM_TIMEOUT:-7200}
+      - LLM_MAX_ASYNC=${LLM_MAX_ASYNC:-1}
 
-      - EMBEDDING_DIM=4096
-      - MAX_EMBED_TOKENS=8192
-      - EMBEDDING_TIMEOUT=300
-      - EMBEDDING_MAX_ASYNC=1
+      - EMBEDDING_DIM=${EMBEDDING_DIM:-1024}
+      - MAX_EMBED_TOKENS=${MAX_EMBED_TOKENS:-8192}
+      - EMBEDDING_TIMEOUT=${EMBEDDING_TIMEOUT:-300}
+      - EMBEDDING_MAX_ASYNC=${EMBEDDING_MAX_ASYNC:-1}
 
       # Document Chunking
-      - CHUNK_SIZE=600
-      - CHUNK_OVERLAP_SIZE=100
+      - CHUNK_SIZE=${CHUNK_SIZE:-600}
+      - CHUNK_OVERLAP_SIZE=${CHUNK_OVERLAP_SIZE:-100}
 
-      # Neo4j
-      - NEO4J_URI=bolt://localhost:7687
-      - NEO4J_USERNAME=neo4j
-      - NEO4J_PASSWORD=${NEO4J_PASSWORD}
-      - NEO4J_DATABASE=neo4j
+      # Neo4j (service name 'neo4j' resolves inside compose network)
+      - NEO4J_URI=${NEO4J_URI:-bolt://neo4j:7687}
+      - NEO4J_USERNAME=${NEO4J_USERNAME:-neo4j}
+      - NEO4J_PASSWORD=${NEO4J_PASSWORD:-raganything}
+      - NEO4J_DATABASE=${NEO4J_DATABASE:-raganything}
 
       # Internal paths (mapped to volume)
-      - WORKING_DIR=/app/data/rag_storage
-      - UPLOAD_DIR=/app/data/uploads
-      - OUTPUT_DIR=/app/data/output
-      - PARSER=mineru
+      - WORKING_DIR=${WORKING_DIR:-/app/data/rag_storage}
+      - UPLOAD_DIR=${UPLOAD_DIR:-/app/data/uploads}
+      - OUTPUT_DIR=${OUTPUT_DIR:-/app/data/output}
+      - PARSER=${PARSER:-mineru}
     volumes:
       - thebrain_data:/app/data
       - thebrain_mineru_models:/root/.cache/huggingface
@@ -67,7 +70,7 @@ services:
     container_name: lightrag_neo4j
     restart: unless-stopped
     environment:
-      - NEO4J_AUTH=neo4j/${NEO4J_PASSWORD}
+      - NEO4J_AUTH=neo4j/${NEO4J_PASSWORD:-raganything}
       - NEO4J_PLUGINS=["apoc"]
     ports:
       - "7474:7474"
@@ -83,7 +86,7 @@ services:
           "-u",
           "neo4j",
           "-p",
-          "${NEO4J_PASSWORD}",
+          "${NEO4J_PASSWORD:-raganything}",
           "RETURN 1",
         ]
       interval: 10s

@@ -11,6 +11,7 @@ LM_STUDIO_BASE_URL = os.getenv("LM_STUDIO_BASE_URL", "http://localhost:1234/v1")
 LLAMA_CPP_BASE_URL = os.getenv("LLAMA_CPP_BASE_URL", "http://localhost:8080/v1")
 OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
 RERANKER_BASE_URL = os.getenv("RERANKER_BASE_URL", "")
+RERANKER_API_KEY = os.getenv("RERANKER_API_KEY", "")
 
 # External API keys
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "sk-no-key-required")
